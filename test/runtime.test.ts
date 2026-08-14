@@ -251,6 +251,7 @@ test("ORDER BY direction must be asc or desc", () => {
     `select id from product order by id asc desc`,
     `select id from product order by id nulls`,
     `select id from product order by id first`,
+    `select id from product order by id nulls sideways`,
   ]) {
     assert.throws(() => (xql as any)(q), (e: Error) =>
       e instanceof XqlError && /^invalid ORDER BY direction/.test(e.message), q);
@@ -260,6 +261,10 @@ test("ORDER BY direction must be asc or desc", () => {
 test("ORDER BY accepts every valid direction form, and leaves expressions alone", () => {
   const { xql } = mk();
   for (const q of [
+    `select id from product order by coalesce(price, title) desc`,
+    `select id from product order by case when id = 1 then 0 else 1 end`,
+    `select id from product order by case when id = 1 then 0 else 1 end desc`,
+    `select id from product order by id nulls first;`,
     `select id from product order by id`,
     `select id from product order by id desc`,
     `select id from product order by id asc nulls last`,

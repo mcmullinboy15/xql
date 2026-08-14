@@ -640,16 +640,77 @@ type HasOpWord<W extends readonly string[]> = W extends readonly [
     : HasOpWord<R>
   : false;
 
+type StripSemis<S extends string> = S extends `${infer R};`
+  ? StripSemis<R>
+  : S;
+
+type PopDirs<
+  W extends readonly string[],
+  Suffix extends string[] = [],
+> = W extends readonly [...infer I extends string[], infer L extends string]
+  ? Lowercase<L> extends DirWord
+    ? PopDirs<I, [L, ...Suffix]>
+    : { head: W; suffix: Suffix }
+  : { head: []; suffix: Suffix };
+
+type HasDirWord<W extends readonly string[]> = W extends readonly [
+  infer H extends string,
+  ...infer R extends string[],
+]
+  ? Lowercase<H> extends DirWord
+    ? true
+    : HasDirWord<R>
+  : false;
+
+type IsSimpleTok<S extends string> = S extends `${string}${
+  | "("
+  | ")"
+  | "'"
+  | '"'
+  | ","
+  | "+"
+  | "-"
+  | "*"
+  | "/"}${string}`
+  ? false
+  : true;
+
+/**
+ * An ORDER BY item is `<expression> [asc|desc] [nulls first|last]`. Only the
+ * direction suffix is checkable — an expression may be a function call, a CASE,
+ * or arithmetic, none of which can be told from a malformed direction by shape
+ * alone. So the suffix is peeled off and validated, and the remainder is only
+ * questioned when it looks like a bare column followed by a stray word.
+ */
 type CheckOrderItem<Item extends string> =
-  Words<Item> extends readonly [string, ...infer Rest extends string[]]
-    ? Rest extends readonly []
-      ? null
-      : HasOpWord<Rest> extends true
-        ? null
-        : ValidDirection<Rest> extends true
+  PopDirs<Words<StripSemis<Item>>> extends infer P extends {
+    head: readonly string[];
+    suffix: readonly string[];
+  }
+    ? P["head"] extends readonly []
+      ? BadDirection<Item>
+      : ValidDirection<P["suffix"]> extends true
+        ? P["head"] extends readonly [string]
           ? null
-          : XqlError<`invalid ORDER BY direction in "${Item}" — use asc or desc, optionally followed by nulls first/last`>
+          : P["head"] extends readonly [string, ...infer R extends string[]]
+            ? HasDirWord<R> extends true
+              ? BadDirection<Item>
+              : P["head"] extends readonly [
+                    infer A extends string,
+                    infer B extends string,
+                  ]
+                ? IsSimpleTok<A> extends true
+                  ? IsPlainIdent<B> extends true
+                    ? BadDirection<Item>
+                    : null
+                  : null
+                : null
+            : null
+        : BadDirection<Item>
     : null;
+
+type BadDirection<Item extends string> =
+  XqlError<`invalid ORDER BY direction in "${Item}" — use asc or desc, optionally followed by nulls first/last`>;
 
 type CheckOrderItems<Items extends readonly string[]> =
   Items extends readonly [infer H extends string, ...infer R extends string[]]

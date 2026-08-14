@@ -313,8 +313,10 @@ xql(`select id from product order by id ascending`);
 //  ^? XqlError<'invalid ORDER BY direction in "id ascending" — use asc or desc, ...'>
 ```
 
-An `ORDER BY` item containing an operator (`order by price + 1 desc`) is treated
-as an expression and left alone.
+An `ORDER BY` item may be an expression — a function call, a `CASE`, arithmetic —
+and only its trailing direction is checked, since an expression cannot be told
+from a malformed direction by shape alone. `order by id ascending` is still an
+error; `order by coalesce(a, b) desc` is not.
 
 `ORDER BY` columns are resolved the way Postgres resolves them — an ordinal, then
 one of the query's own output names, then an unambiguous column from the FROM
