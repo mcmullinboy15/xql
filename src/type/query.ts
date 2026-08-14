@@ -52,6 +52,7 @@ interface KwSplit {
   before: readonly string[];
   after: readonly string[];
   found: boolean;
+  kw: string;
 }
 
 type FindKw<
@@ -60,9 +61,9 @@ type FindKw<
   Acc extends string[] = [],
 > = T extends readonly [infer H extends string, ...infer R extends string[]]
   ? Lowercase<H> extends Kw
-    ? { before: Acc; after: R; found: true }
+    ? { before: Acc; after: R; found: true; kw: H }
     : FindKw<R, Kw, [...Acc, H]>
-  : { before: Acc; after: []; found: false };
+  : { before: Acc; after: []; found: false; kw: "" };
 
 type TailKw =
   | "where"
@@ -209,15 +210,82 @@ type ReplaceEach<
   ? ReplaceEach<ReplaceAll<S, H, " ">, R>
   : S;
 
-type OpChars = ["::", "=", "<", ">", "!", ",", "+", "-", "/", "%", "*", "|"];
+type OpChars = ["=", "<", ">", "!", ",", "+", "-", "/", "%", "*", "|"];
 
-/** Parens stay as their own tokens so a function name can be recognised. */
+type SpaceEach<
+  S extends string,
+  Cs extends readonly string[],
+> = Cs extends readonly [infer H extends string, ...infer R extends string[]]
+  ? SpaceEach<ReplaceAll<S, H, ` ${H} `>, R>
+  : S;
+
+/** Operators become their own tokens; `::casts` stay attached to their value. */
 type TailTokens<S extends string> = Words<
-  ReplaceEach<
+  SpaceEach<
     ReplaceAll<ReplaceAll<MaskStrings<S>, "(", " ( ">, ")", " ) ">,
     OpChars
   >
 >;
+
+type StripCast<S extends string> = S extends `${infer A}::${string}` ? A : S;
+
+type OperatorTok = "=" | "<" | ">" | "!" | "+" | "-" | "*" | "/" | "%" | "|";
+type OpKeyword =
+  | "is" | "in" | "like" | "ilike" | "between" | "not" | "similar";
+
+type IsOperatorish<T extends string> = T extends OperatorTok
+  ? true
+  : Lowercase<T> extends OpKeyword
+    ? true
+    : false;
+
+type NextTok<R extends readonly string[]> = R extends readonly [
+  infer H extends string,
+  ...string[],
+]
+  ? H
+  : "";
+
+/**
+ * Words that can sit next to an operator without being a column. Being generous
+ * here only weakens detection; missing one would reject valid SQL.
+ */
+type Keyword =
+  | "null" | "true" | "false" | "unknown" | "and" | "or" | "not" | "is" | "in"
+  | "any" | "all" | "some" | "between" | "symmetric" | "asymmetric"
+  | "distinct" | "from" | "interval" | "case" | "when" | "then" | "else"
+  | "end" | "escape" | "similar" | "to" | "nulls" | "first" | "last" | "asc"
+  | "desc" | "by" | "like" | "ilike" | "exists" | "array" | "default" | "cast"
+  | "as" | "collate" | "at" | "time" | "zone" | "filter" | "over" | "partition"
+  | "within" | "group" | "order" | "having" | "where" | "limit" | "offset"
+  | "row" | "rows" | "only" | "next" | "fetch" | "for" | "update" | "share"
+  | "of" | "nowait" | "locked" | "skip" | "union" | "intersect" | "except"
+  | "on" | "using" | "natural" | "left" | "right" | "full" | "inner" | "outer"
+  | "join" | "cross" | "lateral" | "with" | "values" | "returning" | "set"
+  | "into" | "insert" | "delete" | "select" | "current_date" | "current_time"
+  | "current_timestamp" | "localtime" | "localtimestamp" | "current_user"
+  | "session_user" | "user" | "current_schema" | "recursive" | "materialized"
+  | "ordinality" | "tablesample";
+
+type NonIdentChar =
+  | OperatorTok
+  | "("
+  | ")"
+  | "."
+  | ","
+  | ":"
+  | "'"
+  | '"'
+  | "["
+  | "]";
+
+type IsPlainIdent<S extends string> = S extends ""
+  ? false
+  : S extends `${Digit}${string}`
+    ? false
+    : S extends `${string}${NonIdentChar}${string}`
+      ? false
+      : true;
 
 /**
  * Whether `A.C` is a real column reference worth resolving. Excludes numeric
@@ -240,26 +308,84 @@ type IsColumnRef<
           ? false
           : true;
 
+type ResolveBareRef<
+  S extends SchemaDef,
+  E extends readonly FromEntry[],
+  Col extends string,
+> = EntriesWithCol<S, E, Col> extends infer M extends readonly FromEntry[]
+  ? M extends readonly [FromEntry]
+    ? null
+    : M extends readonly []
+      ? XqlError<`unknown column "${Col}" — not on any table in scope (${AliasList<E>})`>
+      : XqlError<`ambiguous column "${Col}" — qualify it, it exists on more than one table in scope (${AliasList<E>})`>
+  : null;
+
 /**
- * Validates `alias.column` references outside the SELECT list — WHERE, GROUP BY,
- * HAVING, ORDER BY. Both an unknown alias and an unknown column are rejected,
- * matching what Postgres itself would refuse at execution time.
+ * Validates references outside the SELECT list. Qualified `alias.column` refs
+ * are always checked; a bare identifier is checked only when it sits next to an
+ * operator, which is where a column name actually appears — that keeps keywords,
+ * function names and cast types from being mistaken for columns.
+ *
+ * Postgres allows output names in GROUP BY / ORDER BY but not WHERE / HAVING,
+ * so the walk tracks which clause it is in.
  */
 type CheckTailRefs<
   S extends SchemaDef,
   E extends readonly FromEntry[],
+  Out extends string,
   Toks extends readonly string[],
+  Prev extends string = "",
+  AllowOut extends boolean = false,
 > = Toks extends readonly [infer H extends string, ...infer R extends string[]]
-  ? H extends `${infer A}.${infer C}`
-    ? IsColumnRef<A, C, R> extends true
-      ? IsAlias<E, A> extends true
-        ? HasCol<S, EntryByAlias<E, A>["table"], C> extends true
-          ? CheckTailRefs<S, E, R>
-          : XqlError<`unknown column "${C}" on table "${EntryByAlias<E, A>["table"]}"`>
-        : XqlError<`unknown table alias "${A}" — in scope: ${AliasList<E>}`>
-      : CheckTailRefs<S, E, R>
-    : CheckTailRefs<S, E, R>
+  ? Lowercase<H> extends "where" | "having"
+    ? CheckTailRefs<S, E, Out, R, H, false>
+    : Lowercase<H> extends "group" | "order"
+      ? CheckTailRefs<S, E, Out, R, H, true>
+      : R extends readonly ["(", ...string[]]
+        ? CheckTailRefs<S, E, Out, R, H, AllowOut>
+        : StripCast<H> extends infer T extends string
+          ? T extends `${infer A}.${infer C}`
+            ? IsColumnRef<A, C, R> extends true
+              ? IsAlias<E, A> extends true
+                ? HasCol<S, EntryByAlias<E, A>["table"], C> extends true
+                  ? CheckTailRefs<S, E, Out, R, H, AllowOut>
+                  : XqlError<`unknown column "${C}" on table "${EntryByAlias<E, A>["table"]}"`>
+                : XqlError<`unknown table alias "${A}" — in scope: ${AliasList<E>}`>
+              : CheckTailRefs<S, E, Out, R, H, AllowOut>
+            : IsPlainIdent<T> extends true
+              ? Lowercase<T> extends Keyword
+                ? CheckTailRefs<S, E, Out, R, H, AllowOut>
+                : AllowOut extends true
+                  ? T extends Out
+                    ? CheckTailRefs<S, E, Out, R, H, AllowOut>
+                    : CheckBare<S, E, Out, T, R, Prev, H, AllowOut>
+                  : CheckBare<S, E, Out, T, R, Prev, H, AllowOut>
+              : CheckTailRefs<S, E, Out, R, H, AllowOut>
+          : never
   : null;
+
+type CheckBare<
+  S extends SchemaDef,
+  E extends readonly FromEntry[],
+  Out extends string,
+  T extends string,
+  R extends readonly string[],
+  Prev extends string,
+  H extends string,
+  AllowOut extends boolean,
+> = IsOperatorish<Prev> extends true
+  ? ResolveBareRef<S, E, T> extends infer Err
+    ? Err extends XqlError<string>
+      ? Err
+      : CheckTailRefs<S, E, Out, R, H, AllowOut>
+    : never
+  : IsOperatorish<NextTok<R>> extends true
+    ? ResolveBareRef<S, E, T> extends infer Err
+      ? Err extends XqlError<string>
+        ? Err
+        : CheckTailRefs<S, E, Out, R, H, AllowOut>
+      : never
+    : CheckTailRefs<S, E, Out, R, H, AllowOut>;
 
 type Build<
   S extends SchemaDef,
@@ -278,6 +404,7 @@ type Build<
           : CheckTailRefs<
                 S,
                 E,
+                Extract<keyof Row, string>,
                 TailTokens<StripMarkers<WhereRaw>>
               > extends infer RefErr
             ? RefErr extends XqlError<string>
@@ -355,6 +482,7 @@ type BuildWrite<S extends SchemaDef, Q extends string> =
             : CheckTailRefs<
                   S,
                   E,
+                  never,
                   TailTokens<StripMarkers<`${W["tail"]} ${W["returning"]}`>>
                 > extends infer RErr
               ? RErr extends XqlError<string>
@@ -683,7 +811,7 @@ type ParseSelectQuery<
                 PQ,
                 Trim<Join<Frm["before"], " ">>,
                 Trim<Join<Tail["before"], " ">>,
-                Trim<Join<Tail["after"], " ">>
+                Trim<Join<[Tail["kw"], ...Tail["after"]], " ">>
               >
             : never
         : never

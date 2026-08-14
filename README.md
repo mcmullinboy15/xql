@@ -215,6 +215,22 @@ xql(`select ${xql.cols(`p.id`)} from ${xql.from(`product p`)} where ${xql.where(
 Numeric literals (`p.price > 1.5`), schema-qualified function calls
 (`public.my_func(x)`) and quoted strings are not mistaken for column references.
 
+Bare (unqualified) column names are resolved too, not just `alias.column` ones:
+
+```ts
+xql(`select id from product where account_id = 1`);
+//  ^? XqlError<'unknown column "account_id" — not on any table in scope (product)'>
+
+xql(`select p.id from product p join variant v on v.product_id = p.id where id = 1`);
+//  ^? XqlError<'ambiguous column "id" — qualify it, ...'>
+```
+
+A bare word is only treated as a column when it sits next to an operator, so
+keywords, function names, cast types and literals are never mistaken for one —
+`where created_at > now() - interval '1 day'` and `where cast(id as text) = :t`
+both pass untouched. Output names are accepted in `GROUP BY` and `ORDER BY`,
+where Postgres allows them, but not in `WHERE` or `HAVING`, where it does not.
+
 `LIMIT` / `OFFSET` must take a count — a non-negative integer, `ALL`, or a
 parameter (typed as `number | bigint`, not an arbitrary value). `ORDER BY`
 directions must be `asc` / `desc`, optionally followed by `nulls first` /
@@ -278,8 +294,9 @@ design costs exactly one pair of parentheses, and buys everything else.
 
 - Subqueries in `FROM` are not parsed; the FROM clause is expected to be a
   table expression with joins.
-- Bare (unqualified) column references in `WHERE`, `GROUP BY` and `HAVING` are
-  not checked — only `alias.column` ones there. `ORDER BY` bare names are checked.
+- A bare column reference is only checked when it sits next to an operator,
+  which is where a column name actually appears. `where is_active` on its own is
+  not checked; `where is_active = true` is.
 - Schema-qualified table references (`public.product`) are not resolved.
 - Identifier case is preserved, but quoted identifiers containing SQL keywords
   or whitespace are not handled.

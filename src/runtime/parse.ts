@@ -442,41 +442,109 @@ export function bindParams(
   return { text: out, values: order.map((n) => params[n]) };
 }
 
-/** Mirrors the type-level TailTokens: parens are separate, operators vanish. */
+/** Operators become their own tokens; `::casts` stay attached to their value. */
 function tailTokens(s: string): string[] {
   return words(
     s
       .replace(/'[^']*'/g, "''")
-      .replace(/::/g, " ")
       .replace(/\(/g, " ( ")
       .replace(/\)/g, " ) ")
-      .replace(/[=<>!,+\-/%*|]/g, " "),
+      .replace(/([=<>!,+\-/%*|])/g, " $1 "),
   );
 }
 
+const OPERATORS = new Set([
+  "=", "<", ">", "!", "+", "-", "*", "/", "%", "|",
+]);
+const OP_KEYWORDS = new Set([
+  "is", "in", "like", "ilike", "between", "not", "similar",
+]);
+
 /**
- * Rejects `alias.column` references whose alias is not in scope or whose column
- * does not exist. Numeric literals, schema-qualified names and function calls
- * are skipped — see IsColumnRef in type/query.ts for the matching rules.
+ * Words that can sit next to an operator without being a column. Being generous
+ * here only weakens detection; missing one would reject valid SQL.
  */
-function checkRefs(schema: SchemaDef, entries: Entry[], tail: string): void {
+const KEYWORDS = new Set([
+  "null", "true", "false", "unknown", "and", "or", "not", "is", "in", "any",
+  "all", "some", "between", "symmetric", "asymmetric", "distinct", "from",
+  "interval", "case", "when", "then", "else", "end", "escape", "similar", "to",
+  "nulls", "first", "last", "asc", "desc", "by", "like", "ilike", "exists",
+  "array", "default", "cast", "as", "collate", "at", "time", "zone", "filter",
+  "over", "partition", "within", "group", "order", "having", "where", "limit",
+  "offset", "row", "rows", "only", "next", "fetch", "for", "update", "share",
+  "of", "nowait", "locked", "skip", "union", "intersect", "except", "on",
+  "using", "natural", "left", "right", "full", "inner", "outer", "join",
+  "cross", "lateral", "with", "values", "returning", "set", "into", "insert",
+  "delete", "select", "current_date", "current_time", "current_timestamp",
+  "localtime", "localtimestamp", "current_user", "session_user", "user",
+  "current_schema", "recursive", "materialized", "ordinality", "tablesample",
+]);
+
+const stripCast = (t: string) => t.split("::")[0]!;
+
+/**
+ * Rejects references that cannot resolve. Qualified `alias.column` refs are
+ * always checked; a bare identifier is checked only when it sits next to an
+ * operator, which is where a column name actually appears — that keeps keywords,
+ * function names and cast types from being mistaken for columns.
+ */
+function checkRefs(
+  schema: SchemaDef,
+  entries: Entry[],
+  tail: string,
+  outNames: Set<string> = new Set(),
+): void {
   const toks = tailTokens(tail);
+  const isOp = (t: string | undefined) =>
+    t !== undefined && (OPERATORS.has(t) || OP_KEYWORDS.has(t.toLowerCase()));
+
+  // Postgres allows output names in GROUP BY / ORDER BY, but not WHERE / HAVING.
+  let allowOutNames = false;
+
   for (let i = 0; i < toks.length; i++) {
-    const tok = toks[i]!;
+    const lower = toks[i]!.toLowerCase();
+    if (lower === "where" || lower === "having") {
+      allowOutNames = false;
+      continue;
+    }
+    if (lower === "group" || lower === "order") {
+      allowOutNames = true;
+      continue;
+    }
     if (toks[i + 1] === "(") continue;
+    const tok = stripCast(toks[i]!);
     const dot = tok.indexOf(".");
-    if (dot <= 0) continue;
-    const alias = tok.slice(0, dot);
-    const col = tok.slice(dot + 1);
-    if (col === "" || col.includes(".")) continue;
-    if (/^[0-9]/.test(alias)) continue;
-    const entry = entries.find((e) => e.alias === alias);
-    if (entry === undefined)
+
+    if (dot > 0) {
+      const alias = tok.slice(0, dot);
+      const col = tok.slice(dot + 1);
+      if (col === "" || col.includes(".")) continue;
+      if (/^[0-9]/.test(alias)) continue;
+      const entry = entries.find((e) => e.alias === alias);
+      if (entry === undefined)
+        throw new XqlError(
+          `unknown table alias "${alias}" — in scope: ${aliasList(entries)}`,
+        );
+      if (schema[entry.table]?.[col] === undefined)
+        throw new XqlError(`unknown column "${col}" on table "${entry.table}"`);
+      continue;
+    }
+
+    if (dot !== -1) continue;
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(tok)) continue;
+    if (KEYWORDS.has(tok.toLowerCase())) continue;
+    if (allowOutNames && outNames.has(tok)) continue;
+    if (!isOp(toks[i - 1]) && !isOp(toks[i + 1])) continue;
+
+    const matches = entries.filter((e) => schema[e.table]?.[tok] !== undefined);
+    if (matches.length === 1) continue;
+    if (matches.length === 0)
       throw new XqlError(
-        `unknown table alias "${alias}" — in scope: ${aliasList(entries)}`,
+        `unknown column "${tok}" — not on any table in scope (${aliasList(entries)})`,
       );
-    if (schema[entry.table]?.[col] === undefined)
-      throw new XqlError(`unknown column "${col}" on table "${entry.table}"`);
+    throw new XqlError(
+      `ambiguous column "${tok}" — qualify it, it exists on more than one table in scope (${aliasList(entries)})`,
+    );
   }
 }
 
@@ -801,7 +869,7 @@ export function prepare(schema: SchemaDef, query: string): Prepared {
   const entries = parseFrom(stripMarkers(clauses.from));
   const columns = parseSelect(schema, entries, stripMarkers(clauses.cols));
   const tail = stripMarkers(clauses.tail);
-  checkRefs(schema, entries, tail);
+  checkRefs(schema, entries, tail, new Set(columns.map((c) => c.name)));
   checkOrderColumns(schema, entries, columns, stripMarkers(query));
 
   const shape: Record<string, Codec<unknown>> = {};

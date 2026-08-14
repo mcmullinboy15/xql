@@ -132,7 +132,7 @@ const bw4 = xql(`insert into nosuch (a) values (1)`);
 type _e4 = Expect<Equal<typeof bw4, XqlError<'unknown table "nosuch"'>>>;
 
 const bw5 = xql(`delete from product where nope = 1 returning id`);
-type _e5 = Expect<Equal<Rows<typeof bw5>, { id: bigint }[]>>; // bare refs in tail are not checked
+type _e5 = Expect<Equal<typeof bw5, XqlError<'unknown column "nope" — not on any table in scope (product)'>>>;
 
 // SET assignments keep column nullability (unlike WHERE comparisons)
 const w7 = xql(`update product set price = :price where id = :id`, { price: null, id: 1n });

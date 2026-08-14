@@ -300,3 +300,43 @@ test("ORDER BY resolves output names, then scope columns, then rejects", () => {
     (e: Error) => e instanceof XqlError && /^ambiguous ORDER BY column "id"/.test(e.message),
   );
 });
+
+test("bare column refs in the tail resolve, without false-positiving on SQL syntax", () => {
+  const { xql } = mk();
+  for (const q of [
+    `select id from product where title = :t`,
+    `select id from product where price is null`,
+    `select id from product where price is not null`,
+    `select id from product where id in (1, 2, 3)`,
+    `select id from product where id between 1 and 5`,
+    `select id from product where lower(title) = :q`,
+    `select id from product where id::text = :t`,
+    `select id from product where created_at > current_timestamp`,
+    `select id from product where created_at > now() - interval '1 day'`,
+    `select id from product where title like '%x%' escape '!'`,
+    `select id from product where case when id = 1 then true else false end`,
+    `select id from product where not price is null`,
+    `select id from product where id = any(array[1,2])`,
+    `select id from product where title = 'a = b'`,
+    `select id from product where cast(id as text) = :t`,
+    `select title as name, count(*) as n from product group by name`,
+    `select title as name from product order by name`,
+  ]) {
+    assert.doesNotThrow(() => (xql as any)(q, { t: "x", q: "x", s: "x" }), q);
+  }
+});
+
+test("unknown and ambiguous bare column refs are rejected", () => {
+  const { xql } = mk();
+  const cases: [string, RegExp][] = [
+    [`select id from product where account_id = 1`, /^unknown column "account_id"/],
+    [`select id from product where nope > 5`, /^unknown column "nope"/],
+    [`select id from product where 5 < nope`, /^unknown column "nope"/],
+    // an output name does not rescue an ambiguous ref in WHERE
+    [`select p.id from product p join variant v on v.product_id = p.id where id = 1`, /^ambiguous column "id"/],
+    [`with cheap as (select id from product where account_id < 5) select c.id from cheap c`, /^unknown column "account_id"/],
+  ];
+  for (const [q, re] of cases) {
+    assert.throws(() => (xql as any)(q), (e: Error) => e instanceof XqlError && re.test(e.message), q);
+  }
+});
