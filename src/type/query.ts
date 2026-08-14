@@ -1,4 +1,4 @@
-import type { ColType, SchemaDef } from "../schema.ts";
+import type { Column, ColType, SchemaDef } from "../schema.ts";
 import type { FromEntry } from "./from.ts";
 import { type ParseFrom } from "./from.ts";
 import type {
@@ -17,7 +17,14 @@ import type {
   Trim,
   Words,
 } from "./string.ts";
-import type { ParseWrite, StatementKind, WriteInfo } from "./write.ts";
+import type {
+  DropKw,
+  ParenGroup,
+  ParseWrite,
+  StatementKind,
+  WriteInfo,
+  WTokens,
+} from "./write.ts";
 
 export type SqlValue =
   | string
@@ -563,10 +570,87 @@ type StartsWithWith<Q extends string> =
       : false
     : false;
 
+// ---------------------------------------------------------------------------
+// WITH (common table expressions)
+// ---------------------------------------------------------------------------
+
+/** A resolved CTE row becomes a table definition, so joins treat it as a table. */
+type AsTableDef<Row> = { [K in keyof Row]: Column<Row[K]> };
+
+type DropMaterialized<T extends readonly string[]> = T extends readonly [
+  infer H extends string,
+  ...infer R extends string[],
+]
+  ? Lowercase<H> extends "materialized" | "not"
+    ? DropMaterialized<R>
+    : T
+  : T;
+
+interface CteScope {
+  schema: SchemaDef;
+  main: string;
+}
+
+type ParseCteList<
+  S extends SchemaDef,
+  T extends readonly string[],
+> = T extends readonly [infer Name extends string, ...infer R extends string[]]
+  ? R extends readonly ["(", ...string[]]
+    ? XqlError<`column alias lists on a CTE ("${Name}" (...)) are not supported — name the columns in the CTE's own SELECT instead`>
+    : ParenGroup<DropMaterialized<DropKw<R, "as">>> extends infer G extends {
+          items: readonly string[];
+          rest: readonly string[];
+        }
+      ? RowOfSelect<S, Join<G["items"], " ">> extends infer Row
+        ? [Row] extends [XqlError<string>]
+          ? Row
+          : S & { [K in Name]: AsTableDef<Row> } extends infer S2 extends
+                SchemaDef
+            ? G["rest"] extends readonly [",", ...infer R2 extends string[]]
+              ? ParseCteList<S2, R2>
+              : { schema: S2; main: Join<G["rest"], " "> }
+            : never
+        : never
+      : never
+  : XqlError<"malformed WITH clause">;
+
+type RowOfSelect<S extends SchemaDef, Q extends string> =
+  ParseSelectQuery<S, Q> extends infer P
+    ? [P] extends [XqlError<string>]
+      ? P
+      : P extends { row: infer R }
+        ? R
+        : never
+    : never;
+
+type IsRecursive<T extends readonly string[]> = T extends readonly [
+  infer H extends string,
+  ...string[],
+]
+  ? Lowercase<H> extends "recursive"
+    ? true
+    : false
+  : false;
+
+type WithCtes<S extends SchemaDef, Q extends string> =
+  WTokens<StripMarkers<Q>> extends infer T extends readonly string[]
+    ? DropKw<T, "with"> extends infer AfterWith extends readonly string[]
+      ? IsRecursive<AfterWith> extends true
+        ? XqlError<"WITH RECURSIVE is not supported — the CTE body cannot be resolved before the CTE exists">
+        : ParseCteList<S, AfterWith> extends infer C
+          ? [C] extends [XqlError<string>]
+            ? C
+            : C extends CteScope
+              ? ParseSelectQuery<C["schema"], C["main"], StripMarkers<Q>>
+              : never
+          : never
+      : never
+    : never;
+
 /** Full query literal -> `{ row, params }`, or an `XqlError`. */
 export type ParseQuery<S extends SchemaDef, Q extends string> =
   StartsWithWith<Q> extends true
-    ? XqlError<"WITH (common table expressions) is not supported — clause splitting would latch onto the CTE body and type the wrong columns">
+    ? WithCtes<S, Q>
     : CheckTailKw<Words<MaskStrings<StripMarkers<Q>>>> extends infer TErr
       ? TErr extends XqlError<string>
         ? TErr
@@ -575,7 +659,11 @@ export type ParseQuery<S extends SchemaDef, Q extends string> =
           : BuildWrite<S, Q>
       : never;
 
-type ParseSelectQuery<S extends SchemaDef, Q extends string> =
+type ParseSelectQuery<
+  S extends SchemaDef,
+  Q extends string,
+  PQ extends string = Q,
+> =
   FindKw<Words<Q>, "select"> extends infer Sel extends KwSplit
     ? Sel["found"] extends false
       ? XqlError<"query must contain a SELECT clause">
@@ -585,7 +673,7 @@ type ParseSelectQuery<S extends SchemaDef, Q extends string> =
           : FindKw<Frm["after"], TailKw> extends infer Tail extends KwSplit
             ? Build<
                 S,
-                Q,
+                PQ,
                 Trim<Join<Frm["before"], " ">>,
                 Trim<Join<Tail["before"], " ">>,
                 Trim<Join<Tail["after"], " ">>

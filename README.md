@@ -115,6 +115,33 @@ precision was already gone before xql saw it.
 This is covered by an integration suite that runs the real queries against real
 Postgres (via PGlite), not a mock.
 
+## CTEs
+
+A `WITH` clause is resolved body-first: each CTE's SELECT is typed against the
+schema built so far, and its output columns are registered as a table. From then
+on the CTE behaves exactly like a real table — it joins, expands under `*`, and
+participates in nullability:
+
+```ts
+const rows = await xql(
+  `with cheap as (
+     select id, title, price from product where price < :max
+   )
+   select c.title, v.sku
+   from cheap c left join variant v on v.product_id = c.id`,
+  { max: "10.00" },
+);
+//    ^? { title: string; sku: string | null }[]
+```
+
+Because each CTE is resolved before the next, a later CTE can build on an
+earlier one, and a column the CTE does not expose is an error:
+
+```ts
+xql(`with recent as (select id from product) select r.title from recent r`);
+//  ^? XqlError<'unknown column "title" on table "recent"'>
+```
+
 ## Writes
 
 `INSERT` / `UPDATE` / `DELETE` share the same machinery. `RETURNING` resolves
@@ -245,9 +272,11 @@ design costs exactly one pair of parentheses, and buys everything else.
 - Schema-qualified table references (`public.product`) are not resolved.
 - Identifier case is preserved, but quoted identifiers containing SQL keywords
   or whitespace are not handled.
-- `with` (CTEs) is rejected outright. Clause splitting would otherwise latch
-  onto the CTE's inner `select` and silently type the row from the subquery, so
-  refusing is better than a wrong type.
+- `WITH RECURSIVE` is rejected — the body references the CTE being defined, so
+  it cannot be resolved before that CTE exists.
+- Column alias lists (`with t (a, b) as ...`) are rejected; name the columns in
+  the CTE's own SELECT instead.
+- Data-modifying CTEs (`with x as (insert ... returning ...)`) are not typed.
 - Subqueries in `FROM` are not parsed. They are rejected, but the message talks
   about an unknown alias rather than naming the real cause.
 - Subqueries in `WHERE` do work — `where id in (select ...)` is fine, because the

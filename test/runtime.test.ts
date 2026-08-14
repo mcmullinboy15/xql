@@ -196,15 +196,34 @@ test("int8 codec accepts number, string and bigint, and rejects lossy numbers", 
   }
 });
 
-test("CTEs are refused rather than silently mis-parsed", () => {
+test("CTE columns come from the body, in every formatting style", () => {
   const { xql } = mk();
   for (const q of [
-    `with recent as (select id from product) select p.title from product p`,
-    `with recent as ( select id from product ) select p.title from product p`,
-    `WITH recent AS (\n  select id from product\n)\nselect p.title from product p`,
+    `with recent as (select id, title from product) select r.id, r.title from recent r`,
+    `with recent as ( select id, title from product ) select r.id, r.title from recent r`,
+    `WITH recent AS (\n  select id, title from product\n)\nselect r.id, r.title from recent r`,
   ]) {
-    assert.throws(() => (xql as any)(q), (e: Error) =>
-      e instanceof XqlError && /^WITH \(common table expressions\)/.test(e.message), q);
+    const shape = Object.keys(((xql as any)(q)).rowSchema.shape);
+    assert.deepEqual(shape, ["id", "title"], q);
+  }
+});
+
+test("CTE emits the full original SQL, WITH clause included", () => {
+  const { xql } = mk();
+  const q = (xql as any)(`with recent as (select id from product) select r.id from recent r`);
+  assert.equal(q.toSql().text, "with recent as (select id from product) select r.id from recent r");
+});
+
+test("CTE errors and unsupported forms", () => {
+  const { xql } = mk();
+  const cases: [string, RegExp][] = [
+    [`with recent as (select id from product) select r.title from recent r`, /^unknown column "title" on table "recent"/],
+    [`with recent as (select nope from product) select r.nope from recent r`, /^unknown column "nope"/],
+    [`with recursive t as (select id from product) select t.id from t`, /^WITH RECURSIVE is not supported/],
+    [`with t (a) as (select id from product) select t.a from t`, /^column alias lists on a CTE/],
+  ];
+  for (const [q, re] of cases) {
+    assert.throws(() => (xql as any)(q), (e: Error) => e instanceof XqlError && re.test(e.message), q);
   }
 });
 

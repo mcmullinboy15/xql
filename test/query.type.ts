@@ -146,16 +146,15 @@ type _29 = Expect<Equal<
   { id: bigint }
 >>;
 
-// ---- CTEs are refused rather than mis-parsed --------------------------------
-// Clause splitting would otherwise find the CTE's inner SELECT and silently
-// type the row from the subquery.
+// ---- CTEs --------------------------------------------------------------------
+// a WITH clause no longer swallows the main query's SELECT
 type _30 = Expect<Equal<
   RowOfQuery<S, "with recent as (\n  select id from product\n)\nselect p.title from product p">,
-  XqlError<"WITH (common table expressions) is not supported — clause splitting would latch onto the CTE body and type the wrong columns">
+  { title: string }
 >>;
 type _31 = Expect<Equal<
   RowOfQuery<S, "WITH recent AS (select id from product) select p.title from product p">,
-  XqlError<"WITH (common table expressions) is not supported — clause splitting would latch onto the CTE body and type the wrong columns">
+  { title: string }
 >>;
 
 // ---- LIMIT / OFFSET take a count -------------------------------------------
@@ -252,4 +251,49 @@ type _56 = Expect<Equal<
 type _57 = Expect<Equal<
   RowOfQuery<S, "select id from product order by id nulls">,
   XqlError<'invalid ORDER BY direction in "id nulls" — use asc or desc, optionally followed by nulls first/last'>
+>>;
+
+// a CTE becomes a table the main query can select from
+type _58 = Expect<Equal<
+  RowOfQuery<S, "with recent as (select id, title from product) select r.id, r.title from recent r">,
+  { id: bigint; title: string }
+>>;
+// column nullability survives the round trip through a CTE
+type _59 = Expect<Equal<
+  RowOfQuery<S, "with recent as (select id, price from product) select * from recent">,
+  { id: bigint; price: string | null }
+>>;
+// a CTE joins like any table, and LEFT JOIN nullability still applies
+type _60 = Expect<Equal<
+  RowOfQuery<S, "with recent as (select id, title from product) select r.title, v.sku from recent r left join variant v on v.product_id = r.id">,
+  { title: string; sku: string | null }
+>>;
+// a later CTE can reference an earlier one
+type _61 = Expect<Equal<
+  RowOfQuery<S, "with a as (select id, title from product), b as (select id from a) select b.id from b">,
+  { id: bigint }
+>>;
+// errors inside the CTE body surface
+type _62 = Expect<Equal<
+  RowOfQuery<S, "with recent as (select nope from product) select r.nope from recent r">,
+  XqlError<'unknown column "nope" — not on any table in scope (product)'>
+>>;
+// selecting a column the CTE does not expose is an error
+type _63 = Expect<Equal<
+  RowOfQuery<S, "with recent as (select id from product) select r.title from recent r">,
+  XqlError<'unknown column "title" on table "recent"'>
+>>;
+// aggregates inside a CTE keep their type
+type _64 = Expect<Equal<
+  RowOfQuery<S, "with counts as (select title, count(*) as n from product group by title) select c.title, c.n from counts c">,
+  { title: string; n: bigint }
+>>;
+// unsupported forms are named explicitly
+type _65 = Expect<Equal<
+  RowOfQuery<S, "with recursive t as (select id from product) select t.id from t">,
+  XqlError<"WITH RECURSIVE is not supported — the CTE body cannot be resolved before the CTE exists">
+>>;
+type _66 = Expect<Equal<
+  RowOfQuery<S, "with t (a) as (select id from product) select t.a from t">,
+  XqlError<'column alias lists on a CTE ("t" (...)) are not supported — name the columns in the CTE\'s own SELECT instead'>
 >>;

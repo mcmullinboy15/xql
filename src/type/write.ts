@@ -5,7 +5,7 @@ export type WTokens<S extends string> = Words<
   ReplaceAll<ReplaceAll<ReplaceAll<S, "(", " ( ">, ")", " ) ">, ",", " , ">
 >;
 
-type DropKw<
+export type DropKw<
   T extends readonly string[],
   Kw extends string,
 > = T extends readonly [infer H extends string, ...infer R extends string[]]
@@ -14,13 +14,13 @@ type DropKw<
     : T
   : T;
 
-interface Split2 {
+export interface Split2 {
   before: readonly string[];
   after: readonly string[];
   found: boolean;
 }
 
-type SplitAt<
+export type SplitAt<
   T extends readonly string[],
   Kw extends string,
   Acc extends string[] = [],
@@ -31,7 +31,7 @@ type SplitAt<
   : { before: Acc; after: []; found: false };
 
 /** Consumes a parenthesised group, assuming `T[0]` is `(`. */
-type ParenGroup<
+export type ParenGroup<
   T extends readonly string[],
   Depth extends 1[] = [],
   Acc extends string[] = [],

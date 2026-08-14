@@ -1,5 +1,10 @@
 import { z } from "zod";
-import { castZod, type Codec, type SchemaDef } from "../schema.ts";
+import {
+  castZod,
+  type Codec,
+  type Column,
+  type SchemaDef,
+} from "../schema.ts";
 
 export class XqlError extends Error {
   override name = "XqlError";
@@ -721,11 +726,72 @@ function checkOrderColumns(
   }
 }
 
+/** Wraps a resolved codec so a CTE's output column behaves like a table column. */
+function asColumn(zod: Codec<unknown>): Column<unknown> {
+  return {
+    zod,
+    sqlType: "cte",
+    isNullable: false,
+    nullable: () => asColumn(zod.nullable()),
+  };
+}
+
+/**
+ * Resolves each CTE body against the schema built so far, then registers its
+ * output columns as a pseudo-table. The main query is then prepared against the
+ * extended schema, so joins and star expansion treat a CTE like any table.
+ */
+function prepareWith(schema: SchemaDef, query: string): Prepared {
+  const stripped = stripMarkers(query);
+  const toks = wtokens(stripped);
+  let i = 1;
+  if (toks[i]?.toLowerCase() === "recursive")
+    throw new XqlError(
+      "WITH RECURSIVE is not supported — the CTE body cannot be resolved before the CTE exists",
+    );
+
+  let extended: SchemaDef = schema;
+  for (;;) {
+    const name = toks[i++];
+    if (name === undefined) throw new XqlError("malformed WITH clause");
+    if (toks[i] === "(")
+      throw new XqlError(
+        `column alias lists on a CTE ("${name}" (...)) are not supported — name the columns in the CTE's own SELECT instead`,
+      );
+    if (toks[i]?.toLowerCase() !== "as")
+      throw new XqlError(`malformed WITH clause near "${name}"`);
+    i++;
+    while (
+      toks[i] !== undefined &&
+      (toks[i]!.toLowerCase() === "materialized" ||
+        toks[i]!.toLowerCase() === "not")
+    )
+      i++;
+    if (toks[i] !== "(")
+      throw new XqlError(`CTE "${name}" is missing its parenthesised body`);
+
+    const group = parenGroup(toks, i);
+    const inner = prepare(extended, group.items.join(" "));
+    const table: Record<string, Column<unknown>> = {};
+    for (const c of inner.columns) table[c.name] = asColumn(c.zod);
+    extended = { ...extended, [name]: table };
+
+    i = group.next;
+    if (toks[i] === ",") {
+      i++;
+      continue;
+    }
+    break;
+  }
+
+  const main = prepare(extended, toks.slice(i).join(" "));
+  // The emitted SQL is the original query, WITH clause and all.
+  return { ...main, text: stripped.replace(/\s+/g, " ").trim() };
+}
+
 export function prepare(schema: SchemaDef, query: string): Prepared {
   if (words(stripMarkers(query))[0]?.toLowerCase() === "with")
-    throw new XqlError(
-      "WITH (common table expressions) is not supported — clause splitting would latch onto the CTE body and type the wrong columns",
-    );
+    return prepareWith(schema, query);
   checkTailKeywords(stripMarkers(query));
   const kind = statementKind(query);
   if (kind !== "select") return prepareWrite(schema, query, kind);

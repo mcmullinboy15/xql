@@ -226,3 +226,63 @@ test("write errors throw at construction with the same message as the type", () 
   assert.throws(() => (xql as any)(`delete from product returning p.id`),
     (e: Error) => /unknown table alias "p"/.test(e.message));
 });
+
+// --- CTEs against real Postgres ---------------------------------------------
+
+test("CTE resolves as a table and actually executes", async () => {
+  const rows = await xql(
+    `with cheap as (
+       select id, title, price from product where id <= :maxId
+     )
+     select c.title, c.price from cheap c order by c.title`,
+    { maxId: 3n },
+  );
+  assert.deepEqual(rows, [
+    { title: "hat", price: null },
+    { title: "shirt", price: "19.99" },
+    { title: "sock", price: "2.50" },
+  ]);
+});
+
+test("CTE joins a real table, with LEFT JOIN nullability", async () => {
+  const rows = await xql(
+    `with p as (select id, title from product where id <= :maxId)
+     select p.title, v.sku
+     from p left join variant v on v.product_id = p.id
+     order by p.title, v.id`,
+    { maxId: 2n },
+  );
+  assert.deepEqual(rows, [
+    { title: "hat", sku: null },
+    { title: "shirt", sku: "SHIRT-S" },
+    { title: "shirt", sku: null },
+  ]);
+});
+
+test("a later CTE can build on an earlier one", async () => {
+  const rows = await xql(
+    `with a as (select id, title, price from product where price is not null),
+          b as (select title from a)
+     select b.title from b order by b.title`,
+  );
+  assert.deepEqual(rows.map((r) => r.title), ["shirt", "sock"]);
+});
+
+test("aggregate inside a CTE keeps its decoded type", async () => {
+  const rows = await xql(
+    `with counts as (select count(*) as n from product where id <= :maxId)
+     select c.n from counts c`,
+    { maxId: 3n },
+  );
+  assert.equal(rows[0]!.n, 3n);
+  assert.equal(typeof rows[0]!.n, "bigint");
+});
+
+test("select * over a CTE expands to the CTE's columns only", async () => {
+  const rows = await xql(
+    `with slim as (select id, price from product where id = :id) select * from slim`,
+    { id: 1n },
+  );
+  assert.deepEqual(Object.keys(rows[0]!), ["id", "price"]);
+  assert.deepEqual(rows, [{ id: 1n, price: "19.99" }]);
+});
