@@ -3,6 +3,7 @@ import type { FromEntry } from "./from.ts";
 import { type ParseFrom } from "./from.ts";
 import type {
   AliasList,
+  EntriesWithCol,
   EntryByAlias,
   HasCol,
   IsAlias,
@@ -274,14 +275,23 @@ type Build<
               > extends infer RefErr
             ? RefErr extends XqlError<string>
               ? RefErr
-              : {
-                  row: Row;
-                  params: {
-                    [N in Distinct<
-                      ParamNames<StripMarkers<Q>>
-                    >[number]]: ParamType<S, E, StripMarkers<Q>, N>;
-                  };
-                }
+              : CheckOrderColumns<
+                    S,
+                    E,
+                    Extract<keyof Row, string>,
+                    OrderByItems<Words<MaskStrings<StripMarkers<Q>>>>
+                  > extends infer OErr
+                ? OErr extends XqlError<string>
+                  ? OErr
+                  : {
+                      row: Row;
+                      params: {
+                        [N in Distinct<
+                          ParamNames<StripMarkers<Q>>
+                        >[number]]: ParamType<S, E, StripMarkers<Q>, N>;
+                      };
+                    }
+                : never
             : never
         : never
       : never
@@ -475,6 +485,75 @@ type CheckTailKw<T extends readonly string[]> = T extends readonly [
           : CheckTailKw<R>
         : null
       : CheckTailKw<R>
+  : null;
+
+type DirWord = "asc" | "desc" | "nulls" | "first" | "last";
+
+type DropTrailingDir<W extends readonly string[]> = W extends readonly [
+  ...infer I extends string[],
+  infer L extends string,
+]
+  ? Lowercase<L> extends DirWord
+    ? DropTrailingDir<I>
+    : W
+  : W;
+
+type OrderByItems<T extends readonly string[]> = T extends readonly [
+  infer H extends string,
+  ...infer R extends string[],
+]
+  ? Lowercase<H> extends "order"
+    ? R extends readonly [infer B extends string, ...infer R2 extends string[]]
+      ? Lowercase<B> extends "by"
+        ? SplitTopLevel<Join<TakeUntil<R2, OrderStop>, " ">>
+        : OrderByItems<R>
+      : []
+    : OrderByItems<R>
+  : [];
+
+/**
+ * A bare ORDER BY name may be an ordinal, one of the query's own output names,
+ * or an unambiguous column from the FROM scope — matching what Postgres accepts.
+ * Qualified refs are already covered by CheckTailRefs.
+ */
+type CheckOrderCol<
+  S extends SchemaDef,
+  E extends readonly FromEntry[],
+  RowKeys extends string,
+  Name extends string,
+> = Name extends `${number}`
+  ? null
+  : Name extends RowKeys
+    ? null
+    : Name extends `"${string}`
+      ? null
+      : Name extends `${string}.${string}`
+        ? null
+        : Name extends `${string}(${string}`
+          ? null
+          : EntriesWithCol<S, E, Name> extends infer M extends readonly FromEntry[]
+            ? M extends readonly [FromEntry]
+              ? null
+              : M extends readonly []
+                ? XqlError<`unknown ORDER BY column "${Name}" — not a selected output name, and not a column on any table in scope (${AliasList<E>})`>
+                : XqlError<`ambiguous ORDER BY column "${Name}" — qualify it, it exists on more than one table in scope (${AliasList<E>})`>
+            : null;
+
+type CheckOrderColumns<
+  S extends SchemaDef,
+  E extends readonly FromEntry[],
+  RowKeys extends string,
+  Items extends readonly string[],
+> = Items extends readonly [infer H extends string, ...infer R extends string[]]
+  ? DropTrailingDir<Words<Trim<H>>> extends infer Ex extends readonly string[]
+    ? Ex extends readonly [infer Only extends string]
+      ? CheckOrderCol<S, E, RowKeys, Only> extends infer Err
+        ? Err extends XqlError<string>
+          ? Err
+          : CheckOrderColumns<S, E, RowKeys, R>
+        : never
+      : CheckOrderColumns<S, E, RowKeys, R>
+    : never
   : null;
 
 type StartsWithWith<Q extends string> =

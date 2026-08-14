@@ -198,3 +198,46 @@ type _42 = Expect<Equal<RowOfQuery<S, "select id from product order by id asc nu
 type _43 = Expect<Equal<RowOfQuery<S, "select id from product order by title, id desc limit 10">, { id: bigint }>>;
 // expressions are left alone rather than mis-flagged
 type _44 = Expect<Equal<RowOfQuery<S, "select id from product order by price + 1 desc">, { id: bigint }>>;
+
+// ---- ORDER BY columns resolve against output names, then the FROM scope -----
+// a select-list alias is a valid ORDER BY target (Postgres resolves output names first)
+type _45 = Expect<Equal<
+  RowOfQuery<S, "select p.title as name from product p order by name">,
+  { name: string }
+>>;
+type _46 = Expect<Equal<
+  RowOfQuery<S, "select count(*) as n from product p group by p.title order by n desc">,
+  { n: bigint }
+>>;
+// a bare input column not in the select list still resolves against the scope
+type _47 = Expect<Equal<
+  RowOfQuery<S, "select p.title from product p order by created_at desc">,
+  { title: string }
+>>;
+// ordinals are allowed
+type _48 = Expect<Equal<RowOfQuery<S, "select p.title from product p order by 1">, { title: string }>>;
+// a name that is neither an output name nor a scope column is rejected
+type _49 = Expect<Equal<
+  RowOfQuery<S, "select p.title from product p order by nonexistent">,
+  XqlError<'unknown ORDER BY column "nonexistent" — not a selected output name, and not a column on any table in scope (p)'>
+>>;
+// a typo'd select alias is rejected
+type _50 = Expect<Equal<
+  RowOfQuery<S, "select p.title as name from product p order by nmae desc">,
+  XqlError<'unknown ORDER BY column "nmae" — not a selected output name, and not a column on any table in scope (p)'>
+>>;
+// a bare name on two joined tables, not selected, is ambiguous
+type _51 = Expect<Equal<
+  RowOfQuery<S, "select p.title from product p join variant v on v.product_id = p.id order by id">,
+  XqlError<'ambiguous ORDER BY column "id" — qualify it, it exists on more than one table in scope (p, v)'>
+>>;
+// ...but if it IS the output name, the output wins, as Postgres does
+type _52 = Expect<Equal<
+  RowOfQuery<S, "select p.id from product p join variant v on v.product_id = p.id order by id">,
+  { id: bigint }
+>>;
+// expressions are still left alone
+type _53 = Expect<Equal<
+  RowOfQuery<S, "select p.title from product p order by price + 1 desc">,
+  { title: string }
+>>;

@@ -678,6 +678,49 @@ function checkTailKeywords(query: string): void {
   }
 }
 
+const DIR_WORDS = new Set(["asc", "desc", "nulls", "first", "last"]);
+
+/** A bare ORDER BY name: an ordinal, an output name, or a scope column. */
+function checkOrderColumns(
+  schema: SchemaDef,
+  entries: Entry[],
+  columns: OutColumn[],
+  query: string,
+): void {
+  const outNames = new Set(columns.map((c) => c.name));
+  const toks = words(query.replace(/'[^']*'/g, "''"));
+  for (let i = 0; i < toks.length; i++) {
+    if (toks[i]!.toLowerCase() !== "order") continue;
+    if (toks[i + 1]?.toLowerCase() !== "by") continue;
+    let j = i + 2;
+    const run: string[] = [];
+    while (j < toks.length && !ORDER_STOP.has(toks[j]!.toLowerCase()))
+      run.push(toks[j++]!);
+    for (const raw of splitTopLevel(run.join(" "))) {
+      const w = words(raw.trim());
+      while (w.length > 0 && DIR_WORDS.has(w[w.length - 1]!.toLowerCase()))
+        w.pop();
+      if (w.length !== 1) continue;
+      const name = w[0]!;
+      if (/^[0-9]+$/.test(name)) continue;
+      if (outNames.has(name)) continue;
+      if (name.startsWith('"')) continue;
+      if (name.includes(".") || name.includes("(")) continue;
+      const matches = entries.filter(
+        (e) => schema[e.table]?.[name] !== undefined,
+      );
+      if (matches.length === 1) continue;
+      if (matches.length === 0)
+        throw new XqlError(
+          `unknown ORDER BY column "${name}" — not a selected output name, and not a column on any table in scope (${aliasList(entries)})`,
+        );
+      throw new XqlError(
+        `ambiguous ORDER BY column "${name}" — qualify it, it exists on more than one table in scope (${aliasList(entries)})`,
+      );
+    }
+  }
+}
+
 export function prepare(schema: SchemaDef, query: string): Prepared {
   if (words(stripMarkers(query))[0]?.toLowerCase() === "with")
     throw new XqlError(
@@ -693,6 +736,7 @@ export function prepare(schema: SchemaDef, query: string): Prepared {
   const columns = parseSelect(schema, entries, stripMarkers(clauses.cols));
   const tail = stripMarkers(clauses.tail);
   checkRefs(schema, entries, tail);
+  checkOrderColumns(schema, entries, columns, stripMarkers(query));
 
   const shape: Record<string, Codec<unknown>> = {};
   for (const c of columns) shape[c.name] = c.zod;

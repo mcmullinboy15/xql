@@ -193,6 +193,23 @@ xql(`select id from product order by id ascending`);
 An `ORDER BY` item containing an operator (`order by price + 1 desc`) is treated
 as an expression and left alone.
 
+`ORDER BY` columns are resolved the way Postgres resolves them — an ordinal, then
+one of the query's own output names, then an unambiguous column from the FROM
+scope:
+
+```ts
+xql(`select p.title as name from product p order by name`);        // ok — output name
+xql(`select p.title from product p order by created_at desc`);     // ok — scope column
+xql(`select p.title from product p order by 1`);                   // ok — ordinal
+xql(`select p.title as name from product p order by nmae`);
+//  ^? XqlError<'unknown ORDER BY column "nmae" — not a selected output name, and not a column on any table in scope (p)'>
+xql(`select p.title from product p join variant v on v.product_id = p.id order by id`);
+//  ^? XqlError<'ambiguous ORDER BY column "id" — qualify it, ...'>
+```
+
+Output names win over scope columns, so `select p.id ... order by id` is the
+selected `id`, not an ambiguous reference — same as Postgres.
+
 Because the error type replaces the `Query`, calling `.rows()` on it is itself
 a compile error that quotes the reason.
 
@@ -223,8 +240,8 @@ design costs exactly one pair of parentheses, and buys everything else.
 
 - Subqueries in `FROM` are not parsed; the FROM clause is expected to be a
   table expression with joins.
-- Bare (unqualified) column references outside the SELECT list are not checked,
-  only `alias.column` ones.
+- Bare (unqualified) column references in `WHERE`, `GROUP BY` and `HAVING` are
+  not checked — only `alias.column` ones there. `ORDER BY` bare names are checked.
 - Schema-qualified table references (`public.product`) are not resolved.
 - Identifier case is preserved, but quoted identifiers containing SQL keywords
   or whitespace are not handled.

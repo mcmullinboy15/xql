@@ -247,3 +247,30 @@ test("ORDER BY accepts every valid direction form, and leaves expressions alone"
     assert.doesNotThrow(() => (xql as any)(q), q);
   }
 });
+
+test("ORDER BY resolves output names, then scope columns, then rejects", () => {
+  const { xql } = mk();
+  for (const q of [
+    `select p.title as name from product p order by name`,
+    `select count(*) as n from product p group by p.title order by n desc`,
+    `select p.title from product p order by created_at desc`,
+    `select p.title from product p order by 1`,
+    `select p.title from product p order by p.created_at desc`,
+    `select p.id from product p join variant v on v.product_id = p.id order by id`,
+    `select p.title from product p order by price + 1 desc`,
+  ]) {
+    assert.doesNotThrow(() => (xql as any)(q), q);
+  }
+  assert.throws(
+    () => (xql as any)(`select p.title from product p order by nonexistent`),
+    (e: Error) => e instanceof XqlError && /^unknown ORDER BY column "nonexistent"/.test(e.message),
+  );
+  assert.throws(
+    () => (xql as any)(`select p.title as name from product p order by nmae desc`),
+    (e: Error) => e instanceof XqlError && /^unknown ORDER BY column "nmae"/.test(e.message),
+  );
+  assert.throws(
+    () => (xql as any)(`select p.title from product p join variant v on v.product_id = p.id order by id`),
+    (e: Error) => e instanceof XqlError && /^ambiguous ORDER BY column "id"/.test(e.message),
+  );
+});

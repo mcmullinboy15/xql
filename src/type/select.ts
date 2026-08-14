@@ -63,7 +63,7 @@ export type AliasList<E extends readonly FromEntry[]> = Join<
 >;
 
 /** All FROM entries that expose an unqualified column name. */
-type EntriesWithCol<
+export type EntriesWithCol<
   S extends SchemaDef,
   E extends readonly FromEntry[],
   Col extends string,
