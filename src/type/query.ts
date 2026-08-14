@@ -106,9 +106,12 @@ type DropIdent<S extends string> = S extends `${infer C}${infer R}`
 /** Casts (`::text`) and string literals hide colons that are not params. */
 type MaskCasts<S extends string> = ReplaceAll<S, "::", "@@">;
 
-type MaskStrings<S extends string> = S extends `${infer A}'${string}'${infer C}`
-  ? `${A}''${MaskStrings<C>}`
-  : S;
+type MaskStrings<
+  S extends string,
+  Acc extends string = "",
+> = S extends `${infer A}'${string}'${infer C}`
+  ? MaskStrings<C, `${Acc}${A}''`>
+  : `${Acc}${S}`;
 
 type Mask<S extends string> = MaskCasts<MaskStrings<S>>;
 

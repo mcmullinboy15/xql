@@ -4,15 +4,21 @@ export type TrimL<S extends string> = S extends `${Ws}${infer R}` ? TrimL<R> : S
 export type TrimR<S extends string> = S extends `${infer R}${Ws}` ? TrimR<R> : S;
 export type Trim<S extends string> = TrimL<TrimR<S>>;
 
+/**
+ * Tail-recursive: the accumulator keeps TypeScript's 1000-iteration budget
+ * available instead of the ~100 it allows a type that rebuilds around its own
+ * recursive call.
+ */
 export type ReplaceAll<
   S extends string,
   From extends string,
   To extends string,
+  Acc extends string = "",
 > = From extends ""
-  ? S
+  ? `${Acc}${S}`
   : S extends `${infer A}${From}${infer B}`
-    ? `${A}${To}${ReplaceAll<B, From, To>}`
-    : S;
+    ? ReplaceAll<B, From, To, `${Acc}${A}${To}`>
+    : `${Acc}${S}`;
 
 export type Split<
   S extends string,
@@ -32,9 +38,11 @@ export type Compact<
 export type Join<
   T extends readonly string[],
   D extends string = "",
+  Acc extends string = "",
+  First extends boolean = true,
 > = T extends readonly [infer H extends string, ...infer R extends string[]]
-  ? R extends [] ? H : `${H}${D}${Join<R, D>}`
-  : "";
+  ? Join<R, D, First extends true ? H : `${Acc}${D}${H}`, false>
+  : Acc;
 
 type Spaced<S extends string> = ReplaceAll<
   ReplaceAll<ReplaceAll<S, "\n", " ">, "\t", " ">,

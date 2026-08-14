@@ -316,6 +316,18 @@ design costs exactly one pair of parentheses, and buys everything else.
   tail is reference-checked rather than structurally parsed.
 - `UPDATE ... FROM` extra tables are not added to the scope.
 
+## Type-level performance
+
+The parsers are type-level string machinery, so TypeScript's instantiation budget
+is a real constraint. Every recursive helper must be tail-recursive — a type that
+rebuilds its result *around* the recursive call is capped near depth 100, while an
+accumulator-passing one gets 1000. `ReplaceAll`, `Join` and `MaskStrings` were
+originally written the first way, which was invisible until a CTE wrapped around
+an already-large query and the whole thing collapsed into a bogus error.
+
+`test/stress.type.ts` guards the ceiling: a 5-table, 14-column query, the same
+query behind a CTE, and a two-CTE 22-column variant.
+
 ## Development
 
 ```bash
