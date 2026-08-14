@@ -1,4 +1,4 @@
-import type { Column, ColType, SchemaDef } from "../schema.ts";
+import type { CastTypes, Column, ColType, SchemaDef } from "../schema.ts";
 import type { FromEntry } from "./from.ts";
 import { type ParseFrom } from "./from.ts";
 import type {
@@ -157,7 +157,36 @@ type ContextRef<Q extends string, N extends string> =
     ? LastRef<Words<Before>>
     : "";
 
+/**
+ * `:ids::bytes[]` types the parameter as `Uint8Array[]`. An explicit cast on the
+ * parameter is the only unambiguous signal of its shape — comparison context
+ * gives the element type, which is wrong for `= any (...)`.
+ */
+type ParamCastSuffix<
+  Q extends string,
+  N extends string,
+> = MaskStrings<Q> extends `${string}:${N}::${infer Rest}`
+  ? TakeIdent<Rest> extends infer B extends string
+    ? B extends ""
+      ? never
+      : Lowercase<B> extends infer L extends keyof CastTypes
+        ? Rest extends `${B}[]${string}`
+          ? CastTypes[L][]
+          : CastTypes[L]
+        : never
+    : never
+  : never;
+
 type ParamType<
+  S extends SchemaDef,
+  E extends readonly FromEntry[],
+  Q extends string,
+  N extends string,
+> = [ParamCastSuffix<Q, N>] extends [never]
+  ? ParamTypeFromContext<S, E, Q, N>
+  : ParamCastSuffix<Q, N>;
+
+type ParamTypeFromContext<
   S extends SchemaDef,
   E extends readonly FromEntry[],
   Q extends string,

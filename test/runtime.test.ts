@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { createXql } from "../src/xql.ts";
 import { XqlError } from "../src/runtime/parse.ts";
 import { schema, fakeAdapter } from "./fixture.ts";
+import { defineSchema, t } from "../src/schema.ts";
 
 const mk = (rows: unknown[] = []) => {
   const { adapter, calls } = fakeAdapter(rows);
@@ -428,4 +429,41 @@ test("columns inside conditional parts are still validated", () => {
     () => (xql as any)(`select ${xql.cols(`p.id`)} from ${xql.from(`product p`)} where ${xql.and(true && `p.nope = 1`)}`),
     (e: Error) => e instanceof XqlError && /^unknown column "nope"/.test(e.message),
   );
+});
+
+test("bytes columns validate, and array casts build array schemas", async () => {
+  const byteSchema = defineSchema({
+    asset: { id: t.int8(), digest: t.bytes(), label: t.text() },
+  });
+  const mkBytes = (rows: unknown[]) =>
+    createXql(byteSchema, { query: async () => rows });
+
+  const digest = new Uint8Array([1, 2, 3]);
+  await assert.deepEqual(
+    await mkBytes([{ id: 1n, digest }])(`select id, digest from asset`).rows(),
+    [{ id: 1n, digest }],
+  );
+  // a non-binary value for a bytes column is refused
+  await assert.rejects(() =>
+    mkBytes([{ id: 1n, digest: "not-bytes" }])(`select id, digest from asset`).rows());
+
+  // `::type[]` yields an array schema
+  const arr = mkBytes([{ labels: ["a", "b"] }])(
+    `select array_agg(a.label)::text[] as labels from asset a`,
+  );
+  assert.deepEqual(await arr.rows(), [{ labels: ["a", "b"] }]);
+  await assert.rejects(() =>
+    mkBytes([{ labels: "not-an-array" }])(
+      `select array_agg(a.label)::text[] as labels from asset a`,
+    ).rows());
+
+  // an array parameter binds as one value
+  const q = mkBytes([])(`select id from asset where digest = any (:digests::bytes[])`, {
+    digests: [digest],
+  });
+  assert.equal(
+    q.toSql().text,
+    "select id from asset where digest = any ($1::bytes[])",
+  );
+  assert.deepEqual(q.toSql().values, [[digest]]);
 });

@@ -389,3 +389,31 @@ test("conditional predicates execute, including when none survive", async () => 
   );
   assert.deepEqual(all.map((r) => r.id), [1n, 2n, 3n]);
 });
+
+test("bytea round-trips and array parameters bind, against real Postgres", async () => {
+  await db.exec(`create table asset (id bigint primary key, digest bytea not null, label text not null)`);
+  const a = new Uint8Array([1, 2, 3]);
+  const b = new Uint8Array([4, 5, 6]);
+  await db.query(`insert into asset values (1, $1, 'first'), (2, $2, 'second')`, [a, b]);
+
+  const assets = defineSchema({
+    asset: { id: t.int8(), digest: t.bytes(), label: t.text() },
+  });
+  const axql = createXql(assets, {
+    query: async (text, values) => {
+      const r = await db.query(text, values);
+      return { rows: r.rows as unknown[], rowCount: r.affectedRows ?? r.rows.length };
+    },
+  });
+
+  // `bytea` is the Postgres spelling; `bytes` is the CockroachDB alias for it,
+  // and both resolve to the same codec.
+  const rows = await axql(
+    `select id, digest, label from asset where digest = any (:digests::bytea[]) order by id`,
+    { digests: [a] },
+  );
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0]!.label, "first");
+  assert.ok(rows[0]!.digest instanceof Uint8Array);
+  assert.deepEqual(Array.from(rows[0]!.digest), [1, 2, 3]);
+});
