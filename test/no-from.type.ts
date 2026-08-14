@@ -56,3 +56,14 @@ type _11 = Expect<Equal<
   RowOfQuery<S, "with a as (select id from product) select a.id from a">,
   { id: bigint }
 >>;
+
+// the paren may be attached or split off by a token rejoin, as happens inside a
+// CTE body — both spellings must be caught
+type _12 = Expect<Equal<
+  RowOfQuery<S, "select v.sku from unnest ( :ids::string[] ) as v ( sku )">,
+  XqlError<'a table function in FROM is not supported ("unnest") — for a list parameter use `= any (:ids::type[])` instead'>
+>>;
+type _13 = Expect<Equal<
+  RowOfQuery<S, "with e as ( select li_id from unnest( :ids::int8[] ) as t (li_id) ) select e.li_id from e">,
+  XqlError<'a table function in FROM is not supported ("unnest") — for a list parameter use `= any (:ids::type[])` instead'>
+>>;

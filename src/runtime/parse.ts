@@ -112,9 +112,11 @@ export function parseFrom(clause: string): Entry[] {
       throw new XqlError(
         "a subquery in FROM is not supported — lift it into a WITH clause, which xql does resolve",
       );
-    if (table.includes("("))
+    // The paren may be attached (`unnest(:ids)`) or separate (`unnest ( :ids )`),
+    // depending on whether the clause has been through a token rejoin.
+    if (table.includes("(") || toks[i] === "(")
       throw new XqlError(
-        `a table function in FROM is not supported ("${table.slice(0, table.indexOf("("))}") — for a list parameter use \`= any (:ids::type[])\` instead`,
+        `a table function in FROM is not supported ("${table.replace(/\(.*$/, "")}") — for a list parameter use \`= any (:ids::type[])\` instead`,
       );
     const next = toks[i];
     if (next !== undefined && next.toLowerCase() === "as") {

@@ -170,9 +170,16 @@ type CheckRefs<E extends readonly FromEntry[]> = E extends readonly [
     : Lowercase<H["table"]> extends "lateral"
       ? SubqueryError
       : H["table"] extends `${infer Fn}(${string}`
-        ? XqlError<`a table function in FROM is not supported ("${Fn}") — for a list parameter use \`= any (:ids::type[])\` instead`>
-        : CheckRefs<R>
+        ? TableFnError<Fn>
+        : // the paren may have been split off the name by a token rejoin, in
+          // which case it lands in the alias
+          H["alias"] extends `(${string}`
+          ? TableFnError<H["table"]>
+          : CheckRefs<R>
   : null;
+
+type TableFnError<Fn extends string> =
+  XqlError<`a table function in FROM is not supported ("${Fn}") — for a list parameter use \`= any (:ids::type[])\` instead`>;
 
 type SubqueryError =
   XqlError<"a subquery in FROM is not supported — lift it into a WITH clause, which xql does resolve">;
