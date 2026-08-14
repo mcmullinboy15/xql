@@ -393,3 +393,39 @@ test("data-modifying CTE bodies resolve through RETURNING", () => {
     (e: Error) => e instanceof XqlError && /^unknown table alias "p"/.test(e.message),
   );
 });
+
+test("and/or build predicates from conditional parts", () => {
+  const { xql } = mk();
+  const cols = xql.cols(`p.id`);
+  const from = xql.from(`product p`);
+  const tail = (q: { toSql(): { text: string } }) => q.toSql().text.split(" where ")[1];
+
+  assert.equal(
+    tail((xql as any)(`select ${cols} from ${from} where ${xql.and(true && `p.title is not null`, false && `p.id = 1`)}`)),
+    "(p.title is not null)",
+  );
+  assert.equal(
+    tail((xql as any)(`select ${cols} from ${from} where ${xql.and(`p.title is not null`, `p.id > 0`)}`)),
+    "(p.title is not null) and (p.id > 0)",
+  );
+  assert.equal(
+    tail((xql as any)(`select ${cols} from ${from} where ${xql.or(`p.title is null`, `p.id > 0`)}`)),
+    "(p.title is null) or (p.id > 0)",
+  );
+  // no surviving parts -> a predicate that is still valid SQL
+  assert.equal(tail((xql as any)(`select ${cols} from ${from} where ${xql.and(false && `p.id = 1`)}`)), "true");
+  assert.equal(tail((xql as any)(`select ${cols} from ${from} where ${xql.or(false && `p.id = 1`)}`)), "false");
+  // nesting composes, with parens preserving precedence
+  assert.equal(
+    tail((xql as any)(`select ${cols} from ${from} where ${xql.and(`p.id > 0`, xql.or(`p.title is null`, `p.price is null`))}`)),
+    "(p.id > 0) and ((p.title is null) or (p.price is null))",
+  );
+});
+
+test("columns inside conditional parts are still validated", () => {
+  const { xql } = mk();
+  assert.throws(
+    () => (xql as any)(`select ${xql.cols(`p.id`)} from ${xql.from(`product p`)} where ${xql.and(true && `p.nope = 1`)}`),
+    (e: Error) => e instanceof XqlError && /^unknown column "nope"/.test(e.message),
+  );
+});

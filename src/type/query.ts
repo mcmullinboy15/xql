@@ -137,14 +137,19 @@ type LastRef<W extends readonly string[]> = W extends readonly [
   ...infer I extends string[],
   infer L extends string,
 ]
-  ? Lowercase<StripTrailingOps<L>> extends OperatorWord | ""
+  ? Lowercase<StripLeadingParens<StripTrailingOps<L>>> extends OperatorWord | ""
     ? LastRef<I>
-    : StripTrailingOps<L>
+    : StripLeadingParens<StripTrailingOps<L>>
   : "";
 
 type OpChar = "=" | "<" | ">" | "!" | "~" | "(" | "," | "+" | "-" | "*" | "/";
 type StripTrailingOps<S extends string> = S extends `${infer R}${OpChar}`
   ? StripTrailingOps<R>
+  : S;
+
+/** `(p.price` -> `p.price`, so a parenthesised predicate still resolves. */
+type StripLeadingParens<S extends string> = S extends `(${infer R}`
+  ? StripLeadingParens<R>
   : S;
 
 type ContextRef<Q extends string, N extends string> =
@@ -191,19 +196,21 @@ type CheckRoles<
   ColsRaw extends string,
   FromRaw extends string,
   WhereRaw extends string,
-> = ColsRaw extends `${string}«f:${string}`
-  ? XqlError<"a from() fragment is in the SELECT position">
-  : ColsRaw extends `${string}«w:${string}`
-    ? XqlError<"a where() fragment is in the SELECT position">
-    : FromRaw extends `${string}«c:${string}`
-      ? XqlError<"a cols() fragment is in the FROM position">
-      : FromRaw extends `${string}«w:${string}`
-        ? XqlError<"a where() fragment is in the FROM position">
-        : WhereRaw extends `${string}«c:${string}`
-          ? XqlError<"a cols() fragment is in the WHERE position">
-          : WhereRaw extends `${string}«f:${string}`
-            ? XqlError<"a from() fragment is in the WHERE position">
-            : null;
+> = WhereRaw extends `${string}__xql_dynamic__${string}`
+  ? XqlError<"conditions must be literal strings — write them inline (cond && `...`) rather than pushing into an array, which erases the literal types">
+  : ColsRaw extends `${string}«f:${string}`
+    ? XqlError<"a from() fragment is in the SELECT position">
+    : ColsRaw extends `${string}«w:${string}`
+      ? XqlError<"a where() fragment is in the SELECT position">
+      : FromRaw extends `${string}«c:${string}`
+        ? XqlError<"a cols() fragment is in the FROM position">
+        : FromRaw extends `${string}«w:${string}`
+          ? XqlError<"a where() fragment is in the FROM position">
+          : WhereRaw extends `${string}«c:${string}`
+            ? XqlError<"a cols() fragment is in the WHERE position">
+            : WhereRaw extends `${string}«f:${string}`
+              ? XqlError<"a from() fragment is in the WHERE position">
+              : null;
 
 /** Operators become spaces so `p.id=:x` tokenizes as `p.id` and `x`. */
 type ReplaceEach<
@@ -700,6 +707,64 @@ type StartsWithWith<Q extends string> =
       ? true
       : false
     : false;
+
+// ---------------------------------------------------------------------------
+// Conditional predicate fragments
+// ---------------------------------------------------------------------------
+
+type Falsy = false | null | undefined | "";
+
+export type FragmentParts = readonly (string | false | null | undefined)[];
+
+/**
+ * A part whose type has widened to `string` carries no literal to validate, so
+ * the whole predicate would silently lose checking. Detected and refused.
+ */
+export type HasWidePart<T extends readonly unknown[]> = number extends T["length"]
+  ? true
+  : T extends readonly [infer H, ...infer R]
+    ? string extends Exclude<H, Falsy>
+      ? true
+      : HasWidePart<R>
+    : false;
+
+type JoinParts<
+  T extends readonly unknown[],
+  Sep extends string,
+  Acc extends string = "",
+  First extends boolean = true,
+> = T extends readonly [infer H, ...infer R]
+  ? Exclude<H, Falsy> extends infer S
+    ? [S] extends [never]
+      ? JoinParts<R, Sep, Acc, First>
+      : S extends string
+        ? JoinParts<
+            R,
+            Sep,
+            First extends true ? `(${S})` : `${Acc} ${Sep} (${S})`,
+            false
+          >
+        : JoinParts<R, Sep, Acc, First>
+    : never
+  : Acc;
+
+export type PredicateText<
+  T extends FragmentParts,
+  Sep extends string,
+  Empty extends string,
+> = JoinParts<T, Sep> extends infer S extends string
+  ? S extends ""
+    ? Empty
+    : S
+  : never;
+
+/**
+ * Returned in place of a predicate when the parts have widened to `string`.
+ * A value-position template literal accepts any type, so an error object here
+ * would just widen the query and silently drop all checking; a sentinel keeps
+ * the query a literal and lets CheckRoles report it properly.
+ */
+export type DynamicFragmentSentinel = "«w:__xql_dynamic__»";
 
 // ---------------------------------------------------------------------------
 // WITH (common table expressions)

@@ -363,3 +363,29 @@ test("a data-modifying CTE executes and returns typed rows", async () => {
   ]);
   await db.exec(`delete from product where id = 60`);
 });
+
+test("conditional predicates execute, including when none survive", async () => {
+  const wantCheap = true;
+  const wantTitled = false;
+  const rows = await xql(
+    `select ${xql.cols(`p.id, p.title`)}
+     from ${xql.from(`product p`)}
+     where ${xql.and(
+       `p.id <= :maxId`,
+       wantCheap && `p.price is not null`,
+       wantTitled && `p.title = :title`,
+     )}
+     order by p.id`,
+    // :title belongs to a statically-false branch, so it is not a required param
+    { maxId: 3n },
+  );
+  assert.deepEqual(rows.map((r) => r.title), ["shirt", "sock"]);
+
+  // with nothing surviving, the predicate is `true` and the query still runs
+  const all = await xql(
+    `select ${xql.cols(`p.id`)} from ${xql.from(`product p`)}
+     where ${xql.and(false && `p.id = 1`)} and p.id <= :maxId order by p.id`,
+    { maxId: 3n },
+  );
+  assert.deepEqual(all.map((r) => r.id), [1n, 2n, 3n]);
+});

@@ -55,6 +55,44 @@ xql(`select ${xql.where(`p.id = 1`)} from ${xql.from(`product p`)}`);
 //  ^? XqlError<"a where() fragment is in the SELECT position">
 ```
 
+## Conditional predicates
+
+`xql.and` / `xql.or` join predicates, dropping the falsy ones, so a WHERE clause
+can be assembled from conditions:
+
+```ts
+const rows = await xql(
+  `select ${cols}
+   from ${product}
+   where ${xql.and(
+     wantTitled && `p.title is not null`,
+     wantCheap && `p.price > :max`,
+     wantSku && `v.sku like 'A%'`,
+   )}`,
+  { max: "10.00" },
+);
+```
+
+Each part is validated against the FROM scope and contributes its parameters, so
+a typo inside a branch that is currently switched off is still a compile error.
+Parts are parenthesised before joining, so a part containing `or` cannot change
+the meaning of the whole. With nothing surviving, `and` is `true` and `or` is
+`false`, which keeps the SQL valid. They nest.
+
+A condition that is a compile-time constant is resolved statically — a
+`false && …` branch drops out entirely and its parameters are not required.
+
+**The conditions have to be written inline.** Building an array and pushing into
+it erases the literal types, and nothing can be checked afterwards, so that form
+is rejected:
+
+```ts
+const parts: string[] = [];
+parts.push(`p.title is not null`);
+xql(`select ${cols} from ${product} where ${xql.and(...parts)}`);
+//  ^? XqlError<"conditions must be literal strings — write them inline ...">
+```
+
 ## Parameters are typed from what they are compared to
 
 Parameters are named (`:name`) and passed as an object. Their types come from
