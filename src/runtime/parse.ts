@@ -1,6 +1,7 @@
 import { z } from "zod";
 import {
   castZod,
+  fnZod,
   type Codec,
   type Column,
   type SchemaDef,
@@ -251,6 +252,8 @@ function resolveCall(
   const fn = expr.slice(0, open).trim().toLowerCase();
   const args = expr.slice(open + 1, close);
 
+  const known = fnZod[fn];
+  if (known !== undefined) return known;
   if (fn === "count") return castZod.int8!;
   if (fn === "sum" || fn === "avg" || fn === "min" || fn === "max") {
     try {
@@ -259,7 +262,7 @@ function resolveCall(
       throw new XqlError(inferHint(expr, "numeric"));
     }
   }
-  if (fn === "coalesce") {
+  if (fn === "coalesce" || fn === "nullif" || fn === "greatest" || fn === "least") {
     const first = splitTopLevel(args)[0];
     if (first === undefined) throw new XqlError(inferHint(expr, "numeric"));
     try {
@@ -344,6 +347,13 @@ export function parseSelect(
 // Clause splitting + params
 // ---------------------------------------------------------------------------
 
+/** Blanks string-literal contents while preserving length and whitespace. */
+function maskLiterals(sql: string): string {
+  return sql.replace(/'[^']*'/g, (lit) =>
+    lit.replace(/[^\s']/g, "x"),
+  );
+}
+
 interface Clauses {
   cols: string;
   from: string;
@@ -352,8 +362,27 @@ interface Clauses {
 
 function splitClauses(query: string): Clauses {
   const toks = words(query);
+  // Keyword and paren matching runs over a copy with string literals blanked,
+  // so a parenthesis or keyword inside a literal cannot move the clause
+  // boundaries. Blanking preserves length and whitespace, so the two token
+  // lists stay index-aligned and the returned clauses come from the original.
+  const maskedToks = words(maskLiterals(query));
+
+  /**
+   * Only matches at paren depth zero. A subquery has its own FROM, and matching
+   * it would slice the clauses at the wrong place — `select exists (select 1
+   * from x) as y` would take `x` as the outer table.
+   */
   const at = (kw: (t: string) => boolean, start: number) => {
-    for (let i = start; i < toks.length; i++) if (kw(toks[i]!.toLowerCase())) return i;
+    let depth = 0;
+    for (let i = 0; i < maskedToks.length; i++) {
+      const tok = maskedToks[i]!;
+      if (i >= start && depth === 0 && kw(tok.toLowerCase())) return i;
+      for (const ch of tok) {
+        if (ch === "(") depth++;
+        else if (ch === ")") depth--;
+      }
+    }
     return -1;
   };
   const sel = at((t) => t === "select", 0);
@@ -715,7 +744,10 @@ const ORDER_STOP = new Set([
 ]);
 const OP_WORDS = new Set(["+", "-", "*", "/", "||", "%"]);
 
-function isLimitValue(v: string): boolean {
+function isLimitValue(raw: string): boolean {
+  // a LIMIT inside a subquery carries the rest of the expression on its value
+  // token, e.g. `limit 1)::int4`
+  const v = raw.replace(/[);].*$/, "");
   return /^[0-9]+$/.test(v) || v.toLowerCase() === "all" || /^:[A-Za-z_]/.test(v);
 }
 

@@ -139,6 +139,110 @@ export interface CastTypes {
   jsonb: unknown;
 }
 
+/**
+ * Functions whose result type is fixed by SQL itself, so it can be resolved
+ * without a cast. Anything whose type depends on its arguments in a way that
+ * cannot be read off the call — `jsonb_agg`, `array_agg` — deliberately stays
+ * out and still needs an explicit cast.
+ */
+export interface FnTypes {
+  exists: boolean;
+  "not exists": boolean;
+  bool_and: boolean;
+  bool_or: boolean;
+  every: boolean;
+
+  encode: string;
+  to_char: string;
+  to_hex: string;
+  lower: string;
+  upper: string;
+  initcap: string;
+  trim: string;
+  btrim: string;
+  ltrim: string;
+  rtrim: string;
+  md5: string;
+  concat: string;
+  concat_ws: string;
+  replace: string;
+  substr: string;
+  substring: string;
+  format: string;
+  quote_ident: string;
+  quote_literal: string;
+
+  decode: Uint8Array;
+
+  length: number;
+  char_length: number;
+  character_length: number;
+  bit_length: number;
+  octet_length: number;
+  position: number;
+  strpos: number;
+  array_length: number;
+  cardinality: number;
+
+  row_number: bigint;
+  rank: bigint;
+  dense_rank: bigint;
+
+  now: Date;
+  clock_timestamp: Date;
+  statement_timestamp: Date;
+  transaction_timestamp: Date;
+}
+
+export const fnZod: Record<string, Codec<unknown>> = {
+  exists: z.boolean(),
+  "not exists": z.boolean(),
+  bool_and: z.boolean(),
+  bool_or: z.boolean(),
+  every: z.boolean(),
+
+  encode: z.string(),
+  to_char: z.string(),
+  to_hex: z.string(),
+  lower: z.string(),
+  upper: z.string(),
+  initcap: z.string(),
+  trim: z.string(),
+  btrim: z.string(),
+  ltrim: z.string(),
+  rtrim: z.string(),
+  md5: z.string(),
+  concat: z.string(),
+  concat_ws: z.string(),
+  replace: z.string(),
+  substr: z.string(),
+  substring: z.string(),
+  format: z.string(),
+  quote_ident: z.string(),
+  quote_literal: z.string(),
+
+  decode: asBytes,
+
+  length: asNumber,
+  char_length: asNumber,
+  character_length: asNumber,
+  bit_length: asNumber,
+  octet_length: asNumber,
+  position: asNumber,
+  strpos: asNumber,
+  array_length: asNumber,
+  cardinality: asNumber,
+
+  row_number: asBigint,
+  rank: asBigint,
+  dense_rank: asBigint,
+
+  now: asDate,
+  clock_timestamp: asDate,
+  statement_timestamp: asDate,
+  transaction_timestamp: asDate,
+};
+
 export const castZod: Record<string, Codec<unknown>> = {
   int8: asBigint,
   bigint: asBigint,

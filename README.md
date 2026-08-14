@@ -349,7 +349,12 @@ a compile error that quotes the reason.
 - `*` and `p.*`, expanded in declaration order with join nullability applied.
 - Aliases: `expr as name`, or `p.id name`.
 - Aggregates with derivable types: `count` → `bigint`, `sum`/`avg`/`min`/`max` →
-  the argument's type, nullable, `coalesce` → the first argument, non-null.
+  the argument's type, nullable, and `coalesce`/`nullif`/`greatest`/`least` →
+  the first argument.
+- Functions whose result SQL fixes: `exists` → `boolean`, `lower`/`encode`/
+  `to_char` → `string`, `length` → `number`, `now` → `Date`, `row_number` →
+  `bigint`, and similar. Anything whose type depends on its arguments in a way
+  the call does not show — `jsonb_agg`, `array_agg` — still needs a cast.
 - Anything else needs an explicit cast, which doubles as the escape hatch and is
   real SQL:
 
@@ -382,6 +387,9 @@ design costs exactly one pair of parentheses, and buys everything else.
   the CTE's own SELECT instead.
 - `SELECT` without a `FROM` clause is not supported, in a CTE body or anywhere
   else — every query needs a table expression.
+- Clause splitting is parenthesis-aware, so a subquery's own `FROM` is not
+  mistaken for the outer one and a keyword inside a string literal cannot move a
+  clause boundary.
 - Subqueries in `FROM` are not parsed. They are rejected, but the message talks
   about an unknown alias rather than naming the real cause.
 - Subqueries elsewhere are accepted but not checked: their own scope is skipped
