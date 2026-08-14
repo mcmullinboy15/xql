@@ -1,0 +1,59 @@
+import { defineSchema, t } from "../src/schema.ts";
+import { createXql, type Adapter } from "../src/xql.ts";
+
+const adapter: Adapter = { query: async () => [] };
+
+const big = defineSchema({
+  product: { id: t.int8(), title: t.text(), sku: t.text(), price: t.numeric().nullable(), supplier_id: t.int8().nullable(), created_at: t.timestamptz(), updated_at: t.timestamptz(), archived: t.bool(), account_id: t.int8(), upc: t.text().nullable() },
+  variant: { id: t.int8(), product_id: t.int8(), sku: t.text().nullable(), option1: t.text().nullable(), option2: t.text().nullable(), barcode: t.text().nullable() },
+  supplier: { id: t.int8(), name: t.text(), lead_time_days: t.int4().nullable(), currency: t.text() },
+  inventory_level: { id: t.int8(), variant_id: t.int8(), location_id: t.int8(), on_hand: t.int4(), incoming: t.int4(), reserved: t.int4() },
+  location: { id: t.int8(), name: t.text(), code: t.text().nullable() },
+});
+const x = createXql(big, adapter);
+
+// 5 tables, mixed join kinds, 14 output columns, aggregates, casts, params
+const q = x(
+  `select ${x.cols(`
+      p.id, p.title, p.sku as product_sku, p.price,
+      v.id as variant_id, v.sku as variant_sku, v.barcode,
+      s.name as supplier_name, s.lead_time_days,
+      l.name as location_name, l.code,
+      sum(il.on_hand)::int4 as on_hand,
+      count(*) as rows_,
+      max(p.updated_at) as last_update
+   `)}
+   from ${x.from(`
+      product p
+      join variant v on v.product_id = p.id
+      left join supplier s on s.id = p.supplier_id
+      left join inventory_level il on il.variant_id = v.id
+      left join location l on l.id = il.location_id
+   `)}
+   where ${x.where(`p.account_id = :accountId and p.archived = :archived and s.name ilike :q`)}
+   group by p.id, v.id, s.id, l.id
+   order by p.updated_at desc
+   limit 50`,
+  { accountId: 1n, archived: false, q: "%acme%" },
+);
+
+type Rows<Q> = Q extends { rows(): Promise<infer R> } ? R : never;
+type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends (<T>() => T extends B ? 1 : 2) ? true : false;
+type Expect<T extends true> = T;
+
+type _ = Expect<Equal<Rows<typeof q>, {
+  id: bigint;
+  title: string;
+  product_sku: string;
+  price: string | null;
+  variant_id: bigint;
+  variant_sku: string | null;
+  barcode: string | null;
+  supplier_name: string | null;   // LEFT JOIN supplier
+  lead_time_days: number | null;
+  location_name: string | null;   // LEFT JOIN location
+  code: string | null;
+  on_hand: number;
+  rows_: bigint;
+  last_update: Date | null;
+}[]>>;

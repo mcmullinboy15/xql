@@ -1,0 +1,23 @@
+{
+  "name": "xql",
+  "version": "0.1.0",
+  "description": "SQL template strings that type and validate their own output",
+  "main": "index.js",
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "node --test --experimental-strip-types test/runtime.test.ts test/pg.test.ts",
+    "check": "npm run typecheck && npm test"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@electric-sql/pglite": "^0.5.5",
+    "typescript": "^7.0.2",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^26.2.0"
+  },
+  "type": "module"
+}
