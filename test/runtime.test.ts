@@ -365,3 +365,15 @@ test("multiple CTEs: errors point at the right body", () => {
     assert.throws(() => (xql as any)(q), (e: Error) => e instanceof XqlError && re.test(e.message), q);
   }
 });
+
+test("a dangling comma after a CTE is reported as a malformed WITH clause", () => {
+  const { xql } = mk();
+  const cte = `with asdf as (\n  select id from product where id = :a\n  )`;
+  const body = `\n  select p.title from product p where p.id = :b`;
+  assert.throws(
+    () => (xql as any)(`${cte},${body}`, { a: 1n, b: 1n }),
+    (e: Error) => e instanceof XqlError && e.message === 'malformed WITH clause near "select"',
+  );
+  // the same query without the comma is fine
+  assert.doesNotThrow(() => (xql as any)(`${cte}${body}`, { a: 1n, b: 1n }));
+});

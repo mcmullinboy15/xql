@@ -729,7 +729,8 @@ type ParseCteList<
 > = T extends readonly [infer Name extends string, ...infer R extends string[]]
   ? R extends readonly ["(", ...string[]]
     ? XqlError<`column alias lists on a CTE ("${Name}" (...)) are not supported — name the columns in the CTE's own SELECT instead`>
-    : ParenGroup<DropMaterialized<DropKw<R, "as">>> extends infer G extends {
+    : Lowercase<NextTok<R>> extends "as"
+    ? ParenGroup<DropMaterialized<DropKw<R, "as">>> extends infer G extends {
           items: readonly string[];
           rest: readonly string[];
         }
@@ -750,6 +751,7 @@ type ParseCteList<
             : never
         : never
       : never
+    : XqlError<`malformed WITH clause near "${Name}"`>
   : XqlError<"malformed WITH clause">;
 
 type IsRecursive<T extends readonly string[]> = T extends readonly [
