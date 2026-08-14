@@ -467,3 +467,36 @@ test("bytes columns validate, and array casts build array schemas", async () => 
   );
   assert.deepEqual(q.toSql().values, [[digest]]);
 });
+
+test("DISTINCT and DISTINCT ON are transparent to the row shape", () => {
+  const { xql } = mk();
+  const shapes: [string, string[]][] = [
+    [`select distinct p.title, p.id from product p`, ["title", "id"]],
+    [`select DISTINCT p.title from product p`, ["title"]],
+    [`select distinct * from product`, ["id", "title", "price", "created_at"]],
+    [`select all p.id from product p`, ["id"]],
+    [`select distinct on (p.title) p.title, p.id from product p`, ["title", "id"]],
+    [`select distinct on (p.title, p.id) p.title from product p`, ["title"]],
+    [`select count(distinct p.id) as n from product p`, ["n"]],
+  ];
+  for (const [q, expected] of shapes) {
+    assert.deepEqual(Object.keys(((xql as any)(q)).rowSchema.shape), expected, q);
+  }
+  // DISTINCT must not hide the emitted SQL either
+  assert.equal(
+    (xql as any)(`select distinct on (p.title) p.title from product p`).toSql().text,
+    "select distinct on (p.title) p.title from product p",
+  );
+});
+
+test("references inside DISTINCT ON are checked", () => {
+  const { xql } = mk();
+  const cases: [string, RegExp][] = [
+    [`select distinct on (p.nope) p.title from product p`, /^unknown column "nope" on table "product"$/],
+    [`select distinct on (z.title) p.title from product p`, /^unknown table alias "z"/],
+    [`select distinct p.nope from product p`, /^unknown column "nope" on table "product"$/],
+  ];
+  for (const [q, re] of cases) {
+    assert.throws(() => (xql as any)(q), (e: Error) => e instanceof XqlError && re.test(e.message), q);
+  }
+});

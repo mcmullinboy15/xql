@@ -338,6 +338,8 @@ a compile error that quotes the reason.
 
 ## Expressions
 
+- `distinct`, `distinct on (...)` and `all`, which do not change the row type.
+  The `distinct on` expressions are still checked as column references.
 - Columns, qualified (`p.id`) or bare (resolved across the scope, ambiguity rejected).
 - `*` and `p.*`, expanded in declaration order with join nullability applied.
 - Aliases: `expr as name`, or `p.id name`.

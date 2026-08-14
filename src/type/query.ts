@@ -426,6 +426,16 @@ type CheckBare<
       : never
     : CheckTailRefs<S, E, Out, R, H, AllowOut>;
 
+/** The first failing check in a list, or null when all pass. */
+type FirstError<T extends readonly unknown[]> = T extends readonly [
+  infer H,
+  ...infer R,
+]
+  ? H extends XqlError<string>
+    ? H
+    : FirstError<R>
+  : null;
+
 type Build<
   S extends SchemaDef,
   Q extends string,
@@ -437,34 +447,41 @@ type Build<
     ? RoleErr
     : ParseFrom<StripMarkers<FromRaw>> extends infer E extends
           readonly FromEntry[]
-      ? ParseSelect<S, E, StripMarkers<ColsRaw>> extends infer Row
+      ? ParseSelect<S, E, StripDistinct<StripMarkers<ColsRaw>>> extends infer Row
         ? [Row] extends [XqlError<string>]
           ? Row
-          : CheckTailRefs<
-                S,
-                E,
-                Extract<keyof Row, string>,
-                TailTokens<StripMarkers<WhereRaw>>
-              > extends infer RefErr
-            ? RefErr extends XqlError<string>
-              ? RefErr
-              : CheckOrderColumns<
+          : FirstError<
+                [
+                  CheckTailRefs<
+                    S,
+                    E,
+                    never,
+                    TailTokens<StripMarkers<DistinctOnGroup<ColsRaw>>>
+                  >,
+                  CheckTailRefs<
+                    S,
+                    E,
+                    Extract<keyof Row, string>,
+                    TailTokens<StripMarkers<WhereRaw>>
+                  >,
+                  CheckOrderColumns<
                     S,
                     E,
                     Extract<keyof Row, string>,
                     OrderByItems<Words<MaskStrings<StripMarkers<Q>>>>
-                  > extends infer OErr
-                ? OErr extends XqlError<string>
-                  ? OErr
-                  : {
-                      row: Row;
-                      params: {
-                        [N in Distinct<
-                          ParamNames<StripMarkers<Q>>
-                        >[number]]: ParamType<S, E, StripMarkers<Q>, N>;
-                      };
-                    }
-                : never
+                  >,
+                ]
+              > extends infer Err
+            ? Err extends XqlError<string>
+              ? Err
+              : {
+                  row: Row;
+                  params: {
+                    [N in Distinct<
+                      ParamNames<StripMarkers<Q>>
+                    >[number]]: ParamType<S, E, StripMarkers<Q>, N>;
+                  };
+                }
             : never
         : never
       : never
@@ -729,6 +746,52 @@ type CheckOrderColumns<
       : CheckOrderColumns<S, E, RowKeys, R>
     : never
   : null;
+
+/**
+ * `distinct` and `distinct on (...)` sit between SELECT and the select list.
+ * They do not change the row type, so they are removed before resolving it —
+ * otherwise `distinct` reads as the first output column.
+ */
+type StripDistinctOn<T extends readonly string[]> = T extends readonly [
+  string,
+  ...infer R extends string[],
+]
+  ? R extends readonly [infer N extends string, ...infer R2 extends string[]]
+    ? Lowercase<N> extends "on"
+      ? ParenGroup<R2> extends { rest: infer Rest extends readonly string[] }
+        ? Join<Rest, " ">
+        : ""
+      : Join<R, " ">
+    : ""
+  : "";
+
+/** The expressions inside `distinct on (...)`, which are still column refs. */
+type ExtractOnGroup<T extends readonly string[]> = T extends readonly [
+  string,
+  ...infer R extends string[],
+]
+  ? R extends readonly [infer N extends string, ...infer R2 extends string[]]
+    ? Lowercase<N> extends "on"
+      ? ParenGroup<R2> extends { items: infer I extends readonly string[] }
+        ? Join<I, " ">
+        : ""
+      : ""
+    : ""
+  : "";
+
+type DistinctOnGroup<Cols extends string> =
+  Words<Cols> extends readonly [infer H extends string, ...string[]]
+    ? Lowercase<H> extends "distinct"
+      ? ExtractOnGroup<WTokens<Cols>>
+      : ""
+    : "";
+
+type StripDistinct<Cols extends string> =
+  Words<Cols> extends readonly [infer H extends string, ...string[]]
+    ? Lowercase<H> extends "distinct" | "all"
+      ? StripDistinctOn<WTokens<Cols>>
+      : Cols
+    : Cols;
 
 type StartsWithWith<Q extends string> =
   Words<Q> extends readonly [infer H extends string, ...string[]]
