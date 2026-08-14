@@ -1,3 +1,4 @@
+import type { XqlError } from "./select.ts";
 import type { ReplaceAll, Trim, Words } from "./string.ts";
 
 export interface FromEntry {
@@ -127,7 +128,12 @@ type ParseJoins<
   Acc extends readonly FromEntry[],
 > = T extends readonly []
   ? Acc
-  : ReadJoinKind<T> extends infer K extends JoinKind
+  : // `never extends JoinKind` is true, so without this guard an unrecognised
+    // token would take the branch below and cascade `never` through the whole
+    // parse, yielding a `never` row type instead of an error.
+    [ReadJoinKind<T>] extends [never]
+    ? Acc
+    : ReadJoinKind<T> extends infer K extends JoinKind
     ? ReadRef<K["rest"]> extends infer R extends Ref
       ? ParseJoins<
           SkipOnClause<R["rest"]>,
@@ -143,7 +149,33 @@ type ParseJoins<
 /** `product p left join variant v on ...` -> ordered table entries with join nullability. */
 export type ParseFrom<S extends string> = Trim<S> extends ""
   ? []
-  : ParseFromClause<S>;
+  : ParseFromClause<S> extends infer E extends readonly FromEntry[]
+    ? CheckRefs<E> extends infer Err extends XqlError<string>
+      ? Err
+      : E
+    : never;
+
+/**
+ * A subquery or table function in FROM is read as a table named `(` or
+ * `unnest(...)`, which would otherwise surface much later as a confusing
+ * unknown-alias error. Checking the resolved entries catches every position,
+ * including the second table of a join.
+ */
+type CheckRefs<E extends readonly FromEntry[]> = E extends readonly [
+  infer H extends FromEntry,
+  ...infer R extends FromEntry[],
+]
+  ? H["table"] extends `(${string}`
+    ? SubqueryError
+    : Lowercase<H["table"]> extends "lateral"
+      ? SubqueryError
+      : H["table"] extends `${infer Fn}(${string}`
+        ? XqlError<`a table function in FROM is not supported ("${Fn}") — for a list parameter use \`= any (:ids::type[])\` instead`>
+        : CheckRefs<R>
+  : null;
+
+type SubqueryError =
+  XqlError<"a subquery in FROM is not supported — lift it into a WITH clause, which xql does resolve">;
 
 type ParseFromClause<S extends string> =
   ReadRef<Words<ReplaceAll<S, ",", " , ">>> extends infer R extends Ref

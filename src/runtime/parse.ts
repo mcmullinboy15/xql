@@ -108,6 +108,14 @@ export function parseFrom(clause: string): Entry[] {
   const readRef = (): { table: string; alias: string } => {
     const table = toks[i++];
     if (table === undefined) throw new XqlError("empty FROM clause");
+    if (table.startsWith("(") || table.toLowerCase() === "lateral")
+      throw new XqlError(
+        "a subquery in FROM is not supported — lift it into a WITH clause, which xql does resolve",
+      );
+    if (table.includes("("))
+      throw new XqlError(
+        `a table function in FROM is not supported ("${table.slice(0, table.indexOf("("))}") — for a list parameter use \`= any (:ids::type[])\` instead`,
+      );
     const next = toks[i];
     if (next !== undefined && next.toLowerCase() === "as") {
       i++;

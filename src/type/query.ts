@@ -483,28 +483,30 @@ type Build<
 > = CheckRoles<ColsRaw, FromRaw, WhereRaw> extends infer RoleErr
   ? RoleErr extends XqlError<string>
     ? RoleErr
-    : ParseFrom<StripMarkers<FromRaw>> extends infer E extends
-          readonly FromEntry[]
-      ? ParseSelect<S, E, StripDistinct<StripMarkers<ColsRaw>>> extends infer Row
+    : ParseFrom<StripMarkers<FromRaw>> extends infer E0
+      ? [E0] extends [XqlError<string>]
+        ? E0
+        : E0 extends readonly FromEntry[]
+      ? ParseSelect<S, E0, StripDistinct<StripMarkers<ColsRaw>>> extends infer Row
         ? [Row] extends [XqlError<string>]
           ? Row
           : FirstError<
                 [
                   CheckTailRefs<
                     S,
-                    E,
+                    E0,
                     never,
                     TailTokens<StripMarkers<DistinctOnGroup<ColsRaw>>>
                   >,
                   CheckTailRefs<
                     S,
-                    E,
+                    E0,
                     Extract<keyof Row, string>,
                     TailTokens<StripMarkers<WhereRaw>>
                   >,
                   CheckOrderColumns<
                     S,
-                    E,
+                    E0,
                     Extract<keyof Row, string>,
                     OrderByItems<Words<MaskStrings<StripMarkers<Q>>>>
                   >,
@@ -517,10 +519,11 @@ type Build<
                   params: {
                     [N in Distinct<
                       ParamNames<StripMarkers<Q>>
-                    >[number]]: ParamType<S, E, StripMarkers<Q>, N>;
+                    >[number]]: ParamType<S, E0, StripMarkers<Q>, N>;
                   };
                 }
             : never
+        : never
         : never
       : never
   : never;
