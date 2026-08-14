@@ -57,7 +57,7 @@ export type EntryByAlias<
   A extends string,
 > = Extract<E[number], { alias: A }>;
 
-type AliasList<E extends readonly FromEntry[]> = Join<
+export type AliasList<E extends readonly FromEntry[]> = Join<
   { [K in keyof E]: E[K]["alias"] } extends infer L extends string[] ? L : never,
   ", "
 >;

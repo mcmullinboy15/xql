@@ -166,6 +166,17 @@ xql(`select z.id from product p`);
 //  ^? XqlError<'unknown table alias "z" — in scope: p'>
 ```
 
+An alias used in `WHERE` / `GROUP BY` / `HAVING` / `ORDER BY` must exist in the
+FROM clause too — including when the clauses come from separate fragments:
+
+```ts
+xql(`select ${xql.cols(`p.id`)} from ${xql.from(`product p`)} where ${xql.where(`v.sku is null`)}`);
+//  ^? XqlError<'unknown table alias "v" — in scope: p'>
+```
+
+Numeric literals (`p.price > 1.5`), schema-qualified function calls
+(`public.my_func(x)`) and quoted strings are not mistaken for column references.
+
 Because the error type replaces the `Query`, calling `.rows()` on it is itself
 a compile error that quotes the reason.
 
@@ -197,8 +208,8 @@ design costs exactly one pair of parentheses, and buys everything else.
 - Subqueries in `FROM` are not parsed; the FROM clause is expected to be a
   table expression with joins.
 - Bare (unqualified) column references outside the SELECT list are not checked,
-  only `alias.column` ones. An unrecognised alias is ignored rather than
-  rejected, so CTEs and schema-qualified names pass through.
+  only `alias.column` ones.
+- Schema-qualified table references (`public.product`) are not resolved.
 - Identifier case is preserved, but quoted identifiers containing SQL keywords
   or whitespace are not handled.
 - `with` (CTEs) and subqueries in `FROM` are not parsed.

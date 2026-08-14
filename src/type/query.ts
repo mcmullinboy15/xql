@@ -2,6 +2,7 @@ import type { ColType, SchemaDef } from "../schema.ts";
 import type { FromEntry } from "./from.ts";
 import { type ParseFrom } from "./from.ts";
 import type {
+  AliasList,
   EntryByAlias,
   HasCol,
   IsAlias,
@@ -192,16 +193,41 @@ type ReplaceEach<
   ? ReplaceEach<ReplaceAll<S, H, " ">, R>
   : S;
 
-type OpChars = [
-  "::", "=", "<", ">", "!", "(", ")", ",", "+", "-", "/", "%", "*", "|",
-];
+type OpChars = ["::", "=", "<", ">", "!", ",", "+", "-", "/", "%", "*", "|"];
 
-type TailTokens<S extends string> = Words<ReplaceEach<MaskStrings<S>, OpChars>>;
+/** Parens stay as their own tokens so a function name can be recognised. */
+type TailTokens<S extends string> = Words<
+  ReplaceEach<
+    ReplaceAll<ReplaceAll<MaskStrings<S>, "(", " ( ">, ")", " ) ">,
+    OpChars
+  >
+>;
+
+/**
+ * Whether `A.C` is a real column reference worth resolving. Excludes numeric
+ * literals (`1.5`), schema-qualified names (`public.product.id`), and function
+ * calls (`public.my_func(x)`, detected by a following open paren).
+ */
+type IsColumnRef<
+  A extends string,
+  C extends string,
+  Rest extends readonly string[],
+> = A extends ""
+  ? false
+  : C extends ""
+    ? false
+    : C extends `${string}.${string}`
+      ? false
+      : A extends `${number}`
+        ? false
+        : Rest extends readonly ["(", ...string[]]
+          ? false
+          : true;
 
 /**
  * Validates `alias.column` references outside the SELECT list — WHERE, GROUP BY,
- * HAVING, ORDER BY. Tokens whose left side is not a known alias are ignored,
- * so `public.product` and `1.5` pass through untouched.
+ * HAVING, ORDER BY. Both an unknown alias and an unknown column are rejected,
+ * matching what Postgres itself would refuse at execution time.
  */
 type CheckTailRefs<
   S extends SchemaDef,
@@ -209,15 +235,13 @@ type CheckTailRefs<
   Toks extends readonly string[],
 > = Toks extends readonly [infer H extends string, ...infer R extends string[]]
   ? H extends `${infer A}.${infer C}`
-    ? A extends ""
-      ? CheckTailRefs<S, E, R>
-      : C extends ""
-        ? CheckTailRefs<S, E, R>
-        : IsAlias<E, A> extends true
-          ? HasCol<S, EntryByAlias<E, A>["table"], C> extends true
-            ? CheckTailRefs<S, E, R>
-            : XqlError<`unknown column "${C}" on table "${EntryByAlias<E, A>["table"]}"`>
-          : CheckTailRefs<S, E, R>
+    ? IsColumnRef<A, C, R> extends true
+      ? IsAlias<E, A> extends true
+        ? HasCol<S, EntryByAlias<E, A>["table"], C> extends true
+          ? CheckTailRefs<S, E, R>
+          : XqlError<`unknown column "${C}" on table "${EntryByAlias<E, A>["table"]}"`>
+        : XqlError<`unknown table alias "${A}" — in scope: ${AliasList<E>}`>
+      : CheckTailRefs<S, E, R>
     : CheckTailRefs<S, E, R>
   : null;
 

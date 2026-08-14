@@ -437,16 +437,41 @@ export function bindParams(
   return { text: out, values: order.map((n) => params[n]) };
 }
 
-/** Rejects `alias.column` references to columns that do not exist. */
+/** Mirrors the type-level TailTokens: parens are separate, operators vanish. */
+function tailTokens(s: string): string[] {
+  return words(
+    s
+      .replace(/'[^']*'/g, "''")
+      .replace(/::/g, " ")
+      .replace(/\(/g, " ( ")
+      .replace(/\)/g, " ) ")
+      .replace(/[=<>!,+\-/%*|]/g, " "),
+  );
+}
+
+/**
+ * Rejects `alias.column` references whose alias is not in scope or whose column
+ * does not exist. Numeric literals, schema-qualified names and function calls
+ * are skipped — see IsColumnRef in type/query.ts for the matching rules.
+ */
 function checkRefs(schema: SchemaDef, entries: Entry[], tail: string): void {
-  const bare = tail.replace(/'[^']*'/g, "''");
-  for (const m of bare.matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\b/g)) {
-    const entry = entries.find((e) => e.alias === m[1]!);
-    if (entry === undefined) continue;
-    if (schema[entry.table]?.[m[2]!] === undefined)
+  const toks = tailTokens(tail);
+  for (let i = 0; i < toks.length; i++) {
+    const tok = toks[i]!;
+    if (toks[i + 1] === "(") continue;
+    const dot = tok.indexOf(".");
+    if (dot <= 0) continue;
+    const alias = tok.slice(0, dot);
+    const col = tok.slice(dot + 1);
+    if (col === "" || col.includes(".")) continue;
+    if (/^[0-9]/.test(alias)) continue;
+    const entry = entries.find((e) => e.alias === alias);
+    if (entry === undefined)
       throw new XqlError(
-        `unknown column "${m[2]}" on table "${entry.table}"`,
+        `unknown table alias "${alias}" — in scope: ${aliasList(entries)}`,
       );
+    if (schema[entry.table]?.[col] === undefined)
+      throw new XqlError(`unknown column "${col}" on table "${entry.table}"`);
   }
 }
 

@@ -149,10 +149,30 @@ test("runtime does not false-positive on casts, decimals, or string literals", (
   assert.equal(q.toSql().text, "select p.id from product p where p.id::text = '1.5' and p.price > 1.5 and p.title = 'a.b'");
 });
 
-test("runtime ignores unrecognised aliases in the tail", () => {
+test("runtime rejects an alias used outside SELECT that was never joined", () => {
   const { xql } = mk();
-  assert.doesNotThrow(() =>
-    (xql as any)(`select p.title, count(*) as n from product p group by p.title having count(v.id) > 1`));
+  for (const q of [
+    `select p.id from product p where z.id = 1`,
+    `select p.id from product p order by z.created_at`,
+    `select p.id from product p group by z.title`,
+    `select p.title, count(*) as n from product p group by p.title having count(v.id) > 1`,
+  ]) {
+    assert.throws(() => (xql as any)(q), (e: Error) =>
+      e instanceof XqlError && /^unknown table alias/.test(e.message), q);
+  }
+});
+
+test("runtime accepts an alias that is joined, in every tail clause", () => {
+  const { xql } = mk();
+  assert.doesNotThrow(() => (xql as any)(
+    `select p.id from product p left join variant v on v.product_id = p.id
+     where v.sku is null group by p.id, v.id order by v.sku`));
+});
+
+test("runtime does not false-positive on numeric literals or qualified calls", () => {
+  const { xql } = mk();
+  assert.doesNotThrow(() => (xql as any)(
+    `select p.id from product p where p.price > 1.5 and public.my_func(p.id) = 1 and p.title = 'a.b'`));
 });
 
 test("int8 codec accepts number, string and bigint, and rejects lossy numbers", async () => {

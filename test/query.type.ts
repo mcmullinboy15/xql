@@ -93,10 +93,10 @@ type _18 = Expect<Equal<
   RowOfQuery<S, "select p.title, count(*) as n from product p group by p.titl">,
   XqlError<'unknown column "titl" on table "product"'>
 >>;
-// an unrecognised alias in the tail is ignored (could be a CTE or schema-qualified)
+// an alias used in the tail but never joined is rejected
 type _19 = Expect<Equal<
   RowOfQuery<S, "select p.title, count(*) as n from product p group by p.title having count(v.id) > 1">,
-  { title: string; n: bigint }
+  XqlError<'unknown table alias "v" — in scope: p'>
 >>;
 type _20 = Expect<Equal<
   RowOfQuery<S, "select p.id from product p left join variant v on v.product_id = p.id where v.skuu is null">,
@@ -110,5 +110,38 @@ type _21 = Expect<Equal<
 // no false positives: casts, decimals, schema-qualified names, quoted strings
 type _22 = Expect<Equal<
   RowOfQuery<S, "select p.id from product p where p.id::text = '1.5' and p.price > 1.5 and p.title = 'a.b'">,
+  { id: bigint }
+>>;
+
+// ---- an alias used outside SELECT must exist in the FROM/JOIN scope ---------
+type _23 = Expect<Equal<
+  RowOfQuery<S, "select p.id from product p where z.id = 1">,
+  XqlError<'unknown table alias "z" — in scope: p'>
+>>;
+type _24 = Expect<Equal<
+  RowOfQuery<S, "select p.id from product p order by z.created_at">,
+  XqlError<'unknown table alias "z" — in scope: p'>
+>>;
+type _25 = Expect<Equal<
+  RowOfQuery<S, "select p.id from product p group by z.title">,
+  XqlError<'unknown table alias "z" — in scope: p'>
+>>;
+// an alias that IS joined is accepted, and the scope lists every alias
+type _26 = Expect<Equal<
+  RowOfQuery<S, "select p.id from product p left join variant v on v.product_id = p.id where v.sku = :s">,
+  { id: bigint }
+>>;
+type _27 = Expect<Equal<
+  RowOfQuery<S, "select p.id from product p where v.sku = :s">,
+  XqlError<'unknown table alias "v" — in scope: p'>
+>>;
+// the join must actually be in THIS query's from clause, not another fragment
+type _28 = Expect<Equal<
+  RowOfQuery<S, "select «c:p.id» from «f:product p» where «w:v.sku is null»">,
+  XqlError<'unknown table alias "v" — in scope: p'>
+>>;
+// no false positives: numeric literals, schema-qualified calls, quoted strings
+type _29 = Expect<Equal<
+  RowOfQuery<S, "select p.id from product p where p.price > 1.5 and public.my_func(p.id) = 1 and p.title = 'a.b'">,
   { id: bigint }
 >>;
