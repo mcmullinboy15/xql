@@ -571,3 +571,31 @@ test("clause splitting ignores keywords inside subqueries and literals", () => {
   assert.throws(() => x(`select p.id from product p limit 'abc'`), (e: Error) =>
     e instanceof XqlError && /^LIMIT must be a number/.test(e.message));
 });
+
+test("a FROM clause is optional when every column types itself", async () => {
+  const s = defineSchema({ product: { id: t.int8(), title: t.text() } });
+  const x = createXql(s, { query: async () => [{ n: 2n, any_p: true }] }) as any;
+  assert.deepEqual(Object.keys(x(`select 1::int8 as one, 'x'::text as s`).rowSchema.shape), ["one", "s"]);
+  assert.deepEqual(
+    await x(`select (select count(*) from product)::int8 as n, exists (select 1 from product) as any_p`).rows(),
+    [{ n: 2n, any_p: true }],
+  );
+  // without a scope, a column reference cannot resolve
+  assert.throws(() => x(`select nope`), (e: Error) =>
+    e instanceof XqlError && /the query has no FROM clause$/.test(e.message));
+  assert.throws(() => x(`select *`), (e: Error) =>
+    e instanceof XqlError && /^select \* requires a FROM clause$/.test(e.message));
+});
+
+test("a nested cast is not mistaken for the outer expression's", () => {
+  const s = defineSchema({ product: { id: t.int8() } });
+  const x = createXql(s, { query: async () => [] }) as any;
+  // the cast belongs to the subquery, so the outer expression is still untyped
+  assert.throws(() => x(`select (select count(*)::int8 from product) as n`), (e: Error) =>
+    e instanceof XqlError && /^cannot infer the type of/.test(e.message));
+  // moving it outside resolves
+  assert.deepEqual(Object.keys(x(`select (select count(*) from product)::int8 as n`).rowSchema.shape), ["n"]);
+  // and a genuine typo is still named
+  assert.throws(() => x(`select p.id::nosuchtype as x from product p`), (e: Error) =>
+    e instanceof XqlError && /^unknown cast type "nosuchtype"$/.test(e.message));
+});

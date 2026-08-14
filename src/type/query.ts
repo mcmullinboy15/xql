@@ -1081,7 +1081,17 @@ type ParseSelectQuery<
       ? XqlError<"query must contain a SELECT clause">
       : FindKw<Sel["after"], "from"> extends infer Frm extends KwSplit
         ? Frm["found"] extends false
-          ? XqlError<"query must contain a FROM clause">
+          ? // A FROM clause is optional: `select (select …) as a` is a whole
+            // query whose columns are all self-typing.
+            FindKw<Sel["after"], TailKw> extends infer Bare extends KwSplit
+            ? Build<
+                S,
+                PQ,
+                Trim<Join<Bare["before"], " ">>,
+                "",
+                Trim<Join<[Bare["kw"], ...Bare["after"]], " ">>
+              >
+            : never
           : FindKw<Frm["after"], TailKw> extends infer Tail extends KwSplit
             ? Build<
                 S,
