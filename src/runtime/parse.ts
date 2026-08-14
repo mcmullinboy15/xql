@@ -623,7 +623,67 @@ function prepareWrite(
   };
 }
 
+const ORDER_STOP = new Set([
+  "limit", "offset", "for", "fetch", "union", "intersect", "except", "window",
+]);
+const OP_WORDS = new Set(["+", "-", "*", "/", "||", "%"]);
+
+function isLimitValue(v: string): boolean {
+  return /^[0-9]+$/.test(v) || v.toLowerCase() === "all" || /^:[A-Za-z_]/.test(v);
+}
+
+function validDirection(rest: string[]): boolean {
+  const l = rest.map((t) => t.toLowerCase());
+  let i = 0;
+  if (l[i] === "asc" || l[i] === "desc") i++;
+  if (l[i] === "nulls") {
+    i++;
+    if (l[i] !== "first" && l[i] !== "last") return false;
+    i++;
+  }
+  return i === l.length;
+}
+
+/** LIMIT/OFFSET take a count; ORDER BY items take asc/desc [nulls first|last]. */
+function checkTailKeywords(query: string): void {
+  const toks = words(query.replace(/'[^']*'/g, "''"));
+  for (let i = 0; i < toks.length; i++) {
+    const kw = toks[i]!.toLowerCase();
+    if (kw === "limit" || kw === "offset") {
+      const value = toks[i + 1];
+      if (value === undefined)
+        throw new XqlError(`${kw.toUpperCase()} needs a value`);
+      if (!isLimitValue(value))
+        throw new XqlError(
+          `${kw.toUpperCase()} must be a number, ALL, or a parameter`,
+        );
+      continue;
+    }
+    if (kw === "order" && toks[i + 1]?.toLowerCase() === "by") {
+      let j = i + 2;
+      const run: string[] = [];
+      while (j < toks.length && !ORDER_STOP.has(toks[j]!.toLowerCase()))
+        run.push(toks[j++]!);
+      for (const raw of splitTopLevel(run.join(" "))) {
+        const item = raw.trim();
+        const rest = words(item).slice(1);
+        if (rest.length === 0) continue;
+        if (rest.some((t) => OP_WORDS.has(t))) continue;
+        if (!validDirection(rest))
+          throw new XqlError(
+            `invalid ORDER BY direction in "${item}" — use asc or desc, optionally followed by nulls first/last`,
+          );
+      }
+    }
+  }
+}
+
 export function prepare(schema: SchemaDef, query: string): Prepared {
+  if (words(stripMarkers(query))[0]?.toLowerCase() === "with")
+    throw new XqlError(
+      "WITH (common table expressions) is not supported — clause splitting would latch onto the CTE body and type the wrong columns",
+    );
+  checkTailKeywords(stripMarkers(query));
   const kind = statementKind(query);
   if (kind !== "select") return prepareWrite(schema, query, kind);
 

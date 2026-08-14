@@ -9,7 +9,13 @@ import type {
   ParseSelect,
   XqlError,
 } from "./select.ts";
-import type { Join, ReplaceAll, Trim, Words } from "./string.ts";
+import type {
+  Join,
+  ReplaceAll,
+  SplitTopLevel,
+  Trim,
+  Words,
+} from "./string.ts";
 import type { ParseWrite, StatementKind, WriteInfo } from "./write.ts";
 
 export type SqlValue =
@@ -140,7 +146,9 @@ type ParamType<
   Q extends string,
   N extends string,
 > = ContextRef<Q, N> extends infer Ref extends string
-  ? Ref extends ""
+  ? Lowercase<Ref> extends "limit" | "offset"
+    ? number | bigint
+    : Ref extends ""
     ? SqlValue
     : ParseSelect<S, E, Ref> extends infer R
       ? [R] extends [XqlError<string>]
@@ -362,11 +370,131 @@ type BuildWrite<S extends SchemaDef, Q extends string> =
       : XqlError<`unknown table "${W["table"]}"`>
     : never;
 
+// ---------------------------------------------------------------------------
+// LIMIT / OFFSET / ORDER BY
+// ---------------------------------------------------------------------------
+
+type IsDigits<S extends string> = S extends `${infer C}${infer R}`
+  ? C extends Digit
+    ? R extends ""
+      ? true
+      : IsDigits<R>
+    : false
+  : false;
+
+type IsLimitValue<V extends string> = IsDigits<V> extends true
+  ? true
+  : Lowercase<V> extends "all"
+    ? true
+    : V extends `:${string}`
+      ? true
+      : false;
+
+type ValidNulls<W extends readonly string[]> = W extends readonly []
+  ? true
+  : W extends readonly [infer A extends string, infer B extends string]
+    ? Lowercase<A> extends "nulls"
+      ? Lowercase<B> extends "first" | "last"
+        ? true
+        : false
+      : false
+    : false;
+
+type ValidDirection<W extends readonly string[]> = W extends readonly []
+  ? true
+  : W extends readonly [infer A extends string, ...infer R extends string[]]
+    ? Lowercase<A> extends "asc" | "desc"
+      ? ValidNulls<R>
+      : ValidNulls<W>
+    : false;
+
+/** An operator token means the item is an expression, so leave it alone. */
+type HasOpWord<W extends readonly string[]> = W extends readonly [
+  infer H extends string,
+  ...infer R extends string[],
+]
+  ? H extends "+" | "-" | "*" | "/" | "||" | "%"
+    ? true
+    : HasOpWord<R>
+  : false;
+
+type CheckOrderItem<Item extends string> =
+  Words<Item> extends readonly [string, ...infer Rest extends string[]]
+    ? Rest extends readonly []
+      ? null
+      : HasOpWord<Rest> extends true
+        ? null
+        : ValidDirection<Rest> extends true
+          ? null
+          : XqlError<`invalid ORDER BY direction in "${Item}" — use asc or desc, optionally followed by nulls first/last`>
+    : null;
+
+type CheckOrderItems<Items extends readonly string[]> =
+  Items extends readonly [infer H extends string, ...infer R extends string[]]
+    ? CheckOrderItem<Trim<H>> extends infer E
+      ? E extends XqlError<string>
+        ? E
+        : CheckOrderItems<R>
+      : never
+    : null;
+
+type OrderStop =
+  | "limit" | "offset" | "for" | "fetch" | "union" | "intersect" | "except"
+  | "window";
+
+type TakeUntil<
+  T extends readonly string[],
+  Kw extends string,
+  Acc extends string[] = [],
+> = T extends readonly [infer H extends string, ...infer R extends string[]]
+  ? Lowercase<H> extends Kw
+    ? Acc
+    : TakeUntil<R, Kw, [...Acc, H]>
+  : Acc;
+
+type CheckTailKw<T extends readonly string[]> = T extends readonly [
+  infer H extends string,
+  ...infer R extends string[],
+]
+  ? Lowercase<H> extends "limit" | "offset"
+    ? R extends readonly [infer V extends string, ...infer R2 extends string[]]
+      ? IsLimitValue<V> extends true
+        ? CheckTailKw<R2>
+        : XqlError<`${Uppercase<H>} must be a number, ALL, or a parameter`>
+      : XqlError<`${Uppercase<H>} needs a value`>
+    : Lowercase<H> extends "order"
+      ? R extends readonly [infer B extends string, ...infer R2 extends string[]]
+        ? Lowercase<B> extends "by"
+          ? CheckOrderItems<
+              SplitTopLevel<Join<TakeUntil<R2, OrderStop>, " ">>
+            > extends infer E
+            ? E extends XqlError<string>
+              ? E
+              : CheckTailKw<R2>
+            : never
+          : CheckTailKw<R>
+        : null
+      : CheckTailKw<R>
+  : null;
+
+type StartsWithWith<Q extends string> =
+  Words<Q> extends readonly [infer H extends string, ...string[]]
+    ? Lowercase<H> extends "with"
+      ? true
+      : false
+    : false;
+
 /** Full query literal -> `{ row, params }`, or an `XqlError`. */
 export type ParseQuery<S extends SchemaDef, Q extends string> =
-  StatementKind<Q> extends "select"
-    ? ParseSelectQuery<S, Q>
-    : BuildWrite<S, Q>;
+  StartsWithWith<Q> extends true
+    ? XqlError<"WITH (common table expressions) is not supported — clause splitting would latch onto the CTE body and type the wrong columns">
+    : CheckTailKw<Words<MaskStrings<StripMarkers<Q>>>> extends infer TErr
+      ? TErr extends XqlError<string>
+        ? TErr
+        : StatementKind<Q> extends "select"
+          ? ParseSelectQuery<S, Q>
+          : BuildWrite<S, Q>
+      : never;
 
 type ParseSelectQuery<S extends SchemaDef, Q extends string> =
   FindKw<Words<Q>, "select"> extends infer Sel extends KwSplit

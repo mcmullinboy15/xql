@@ -145,3 +145,56 @@ type _29 = Expect<Equal<
   RowOfQuery<S, "select p.id from product p where p.price > 1.5 and public.my_func(p.id) = 1 and p.title = 'a.b'">,
   { id: bigint }
 >>;
+
+// ---- CTEs are refused rather than mis-parsed --------------------------------
+// Clause splitting would otherwise find the CTE's inner SELECT and silently
+// type the row from the subquery.
+type _30 = Expect<Equal<
+  RowOfQuery<S, "with recent as (\n  select id from product\n)\nselect p.title from product p">,
+  XqlError<"WITH (common table expressions) is not supported — clause splitting would latch onto the CTE body and type the wrong columns">
+>>;
+type _31 = Expect<Equal<
+  RowOfQuery<S, "WITH recent AS (select id from product) select p.title from product p">,
+  XqlError<"WITH (common table expressions) is not supported — clause splitting would latch onto the CTE body and type the wrong columns">
+>>;
+
+// ---- LIMIT / OFFSET take a count -------------------------------------------
+type _32 = Expect<Equal<
+  RowOfQuery<S, "select id from product limit 'abc'">,
+  XqlError<"LIMIT must be a number, ALL, or a parameter">
+>>;
+type _33 = Expect<Equal<
+  RowOfQuery<S, "select id from product limit -5">,
+  XqlError<"LIMIT must be a number, ALL, or a parameter">
+>>;
+type _34 = Expect<Equal<
+  RowOfQuery<S, "select id from product offset x">,
+  XqlError<"OFFSET must be a number, ALL, or a parameter">
+>>;
+type _35 = Expect<Equal<RowOfQuery<S, "select id from product limit all offset 5">, { id: bigint }>>;
+// a LIMIT parameter is a count, not an arbitrary SqlValue
+type _36 = Expect<Equal<
+  ParamsOfQuery<S, "select id from product limit :n">,
+  { n: number | bigint }
+>>;
+
+// ---- ORDER BY direction must be asc / desc ---------------------------------
+type _37 = Expect<Equal<
+  RowOfQuery<S, "select id from product order by id ascending">,
+  XqlError<'invalid ORDER BY direction in "id ascending" — use asc or desc, optionally followed by nulls first/last'>
+>>;
+type _38 = Expect<Equal<
+  RowOfQuery<S, "select id from product order by title desc, id descx">,
+  XqlError<'invalid ORDER BY direction in "id descx" — use asc or desc, optionally followed by nulls first/last'>
+>>;
+type _39 = Expect<Equal<
+  RowOfQuery<S, "select id from product order by id nulls sideways">,
+  XqlError<'invalid ORDER BY direction in "id nulls sideways" — use asc or desc, optionally followed by nulls first/last'>
+>>;
+// valid direction forms all pass
+type _40 = Expect<Equal<RowOfQuery<S, "select id from product order by id">, { id: bigint }>>;
+type _41 = Expect<Equal<RowOfQuery<S, "select id from product order by id desc">, { id: bigint }>>;
+type _42 = Expect<Equal<RowOfQuery<S, "select id from product order by id asc nulls last">, { id: bigint }>>;
+type _43 = Expect<Equal<RowOfQuery<S, "select id from product order by title, id desc limit 10">, { id: bigint }>>;
+// expressions are left alone rather than mis-flagged
+type _44 = Expect<Equal<RowOfQuery<S, "select id from product order by price + 1 desc">, { id: bigint }>>;

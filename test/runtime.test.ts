@@ -195,3 +195,55 @@ test("int8 codec accepts number, string and bigint, and rejects lossy numbers", 
     }
   }
 });
+
+test("CTEs are refused rather than silently mis-parsed", () => {
+  const { xql } = mk();
+  for (const q of [
+    `with recent as (select id from product) select p.title from product p`,
+    `with recent as ( select id from product ) select p.title from product p`,
+    `WITH recent AS (\n  select id from product\n)\nselect p.title from product p`,
+  ]) {
+    assert.throws(() => (xql as any)(q), (e: Error) =>
+      e instanceof XqlError && /^WITH \(common table expressions\)/.test(e.message), q);
+  }
+});
+
+test("LIMIT and OFFSET must take a count", () => {
+  const { xql } = mk();
+  for (const q of [
+    `select id from product limit 'abc'`,
+    `select id from product limit -5`,
+    `select id from product offset x`,
+  ]) {
+    assert.throws(() => (xql as any)(q), (e: Error) =>
+      e instanceof XqlError && /must be a number, ALL, or a parameter$/.test(e.message), q);
+  }
+  assert.doesNotThrow(() => (xql as any)(`select id from product limit all offset 5`));
+  assert.doesNotThrow(() => (xql as any)(`select id from product limit :n`, { n: 10 }));
+});
+
+test("ORDER BY direction must be asc or desc", () => {
+  const { xql } = mk();
+  for (const q of [
+    `select id from product order by id ascending`,
+    `select id from product order by title desc, id descx`,
+    `select id from product order by id nulls sideways`,
+  ]) {
+    assert.throws(() => (xql as any)(q), (e: Error) =>
+      e instanceof XqlError && /^invalid ORDER BY direction/.test(e.message), q);
+  }
+});
+
+test("ORDER BY accepts every valid direction form, and leaves expressions alone", () => {
+  const { xql } = mk();
+  for (const q of [
+    `select id from product order by id`,
+    `select id from product order by id desc`,
+    `select id from product order by id asc nulls last`,
+    `select id from product order by title, id desc limit 10`,
+    `select id from product order by price + 1 desc`,
+    `select id from product where title = 'a limit b'`,
+  ]) {
+    assert.doesNotThrow(() => (xql as any)(q), q);
+  }
+});

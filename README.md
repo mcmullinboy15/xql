@@ -177,6 +177,22 @@ xql(`select ${xql.cols(`p.id`)} from ${xql.from(`product p`)} where ${xql.where(
 Numeric literals (`p.price > 1.5`), schema-qualified function calls
 (`public.my_func(x)`) and quoted strings are not mistaken for column references.
 
+`LIMIT` / `OFFSET` must take a count — a non-negative integer, `ALL`, or a
+parameter (typed as `number | bigint`, not an arbitrary value). `ORDER BY`
+directions must be `asc` / `desc`, optionally followed by `nulls first` /
+`nulls last`:
+
+```ts
+xql(`select id from product limit 'abc'`);
+//  ^? XqlError<"LIMIT must be a number, ALL, or a parameter">
+
+xql(`select id from product order by id ascending`);
+//  ^? XqlError<'invalid ORDER BY direction in "id ascending" — use asc or desc, ...'>
+```
+
+An `ORDER BY` item containing an operator (`order by price + 1 desc`) is treated
+as an expression and left alone.
+
 Because the error type replaces the `Query`, calling `.rows()` on it is itself
 a compile error that quotes the reason.
 
@@ -212,7 +228,13 @@ design costs exactly one pair of parentheses, and buys everything else.
 - Schema-qualified table references (`public.product`) are not resolved.
 - Identifier case is preserved, but quoted identifiers containing SQL keywords
   or whitespace are not handled.
-- `with` (CTEs) and subqueries in `FROM` are not parsed.
+- `with` (CTEs) is rejected outright. Clause splitting would otherwise latch
+  onto the CTE's inner `select` and silently type the row from the subquery, so
+  refusing is better than a wrong type.
+- Subqueries in `FROM` are not parsed. They are rejected, but the message talks
+  about an unknown alias rather than naming the real cause.
+- Subqueries in `WHERE` do work — `where id in (select ...)` is fine, because the
+  tail is reference-checked rather than structurally parsed.
 - `UPDATE ... FROM` extra tables are not added to the scope.
 
 ## Development
