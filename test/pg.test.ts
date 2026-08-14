@@ -346,3 +346,20 @@ test("a CTE may shadow a real table", async () => {
   );
   assert.deepEqual(rows, [{ title: "shirt" }]);
 });
+
+test("a data-modifying CTE executes and returns typed rows", async () => {
+  await db.exec(`insert into product (id, title, stock) values (60, 'before', 1)`);
+  const rows = await xql(
+    `with updated as (
+       update product set title = :title where id = :id returning id, title, price
+     )
+     select * from updated`,
+    { title: "after", id: 60n },
+  );
+  assert.deepEqual(rows, [{ id: 60n, title: "after", price: null }]);
+  // the write really happened
+  assert.deepEqual(await xql(`select title from product where id = :id`, { id: 60n }), [
+    { title: "after" },
+  ]);
+  await db.exec(`delete from product where id = 60`);
+});

@@ -359,3 +359,23 @@ type _78 = Expect<Equal<
   RowOfQuery<S, "with a as (select id, title from product), b as (select id from a) select b.title from b">,
   XqlError<'unknown column "title" on table "b"'>
 >>;
+
+// ---- data-modifying CTEs -----------------------------------------------------
+// a CTE body may be a write, and RETURNING gives the CTE its columns
+type _79 = Expect<Equal<
+  RowOfQuery<S, "with updated as (update product p1 set title = :title where p1.id = :id returning p1.id, p1.price) select * from updated">,
+  { id: bigint; price: string | null }
+>>;
+type _80 = Expect<Equal<
+  RowOfQuery<S, "with created as (insert into product (title) values (:title) returning id, title) select * from created">,
+  { id: bigint; title: string }
+>>;
+type _81 = Expect<Equal<
+  RowOfQuery<S, "with gone as (delete from product where id = :id returning id) select g.id from gone g">,
+  { id: bigint }
+>>;
+// a bad alias inside the write body is reported, not swallowed
+type _82 = Expect<Equal<
+  RowOfQuery<S, "with updated as (update product p1 set title = :title where p.id = :id returning p1.id) select * from updated">,
+  XqlError<'unknown table alias "p" — in scope: p1'>
+>>;

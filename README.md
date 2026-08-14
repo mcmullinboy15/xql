@@ -145,6 +145,20 @@ xql(`with cheap as (select id from product where price < :max)
 //   ^? { max: string; id: bigint }  — `max` from the body, `id` from the main query
 ```
 
+A CTE body may also be a write. Its `RETURNING` list becomes the CTE's columns,
+so the result of a write can be selected from:
+
+```ts
+const rows = await xql(
+  `with updated as (
+     update product set title = :title where id = :id returning id, title
+   )
+   select * from updated`,
+  { title: "after", id: 1n },
+);
+//    ^? { id: bigint; title: string }[]
+```
+
 Several CTEs work the way you would expect: the main query can join them, they
 can chain, and they can be independent. Because each is resolved before the next,
 a later CTE can build on an earlier one but not the reverse, and a CTE may shadow
@@ -307,7 +321,6 @@ design costs exactly one pair of parentheses, and buys everything else.
   it cannot be resolved before that CTE exists.
 - Column alias lists (`with t (a, b) as ...`) are rejected; name the columns in
   the CTE's own SELECT instead.
-- Data-modifying CTEs (`with x as (insert ... returning ...)`) are not typed.
 - `SELECT` without a `FROM` clause is not supported, in a CTE body or anywhere
   else — every query needs a table expression.
 - Subqueries in `FROM` are not parsed. They are rejected, but the message talks

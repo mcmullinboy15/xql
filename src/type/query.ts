@@ -705,6 +705,15 @@ type StartsWithWith<Q extends string> =
 // WITH (common table expressions)
 // ---------------------------------------------------------------------------
 
+/**
+ * A CTE body may be a SELECT or a data-modifying statement with RETURNING, so it
+ * dispatches the same way a top-level statement does.
+ */
+type CteBody<S extends SchemaDef, Q extends string> =
+  StatementKind<Q> extends "select"
+    ? ParseSelectQuery<S, Q>
+    : BuildWrite<S, Q>;
+
 /** A resolved CTE row becomes a table definition, so joins treat it as a table. */
 type AsTableDef<Row> = { [K in keyof Row]: Column<Row[K]> };
 
@@ -737,7 +746,7 @@ type ParseCteList<
           items: readonly string[];
           rest: readonly string[];
         }
-      ? ParseSelectQuery<S, Join<G["items"], " ">> extends infer B
+      ? CteBody<S, Join<G["items"], " ">> extends infer B
         ? [B] extends [XqlError<string>]
           ? B
           : B extends { row: infer Row; params: infer BParams }

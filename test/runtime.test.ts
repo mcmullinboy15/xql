@@ -377,3 +377,19 @@ test("a dangling comma after a CTE is reported as a malformed WITH clause", () =
   // the same query without the comma is fine
   assert.doesNotThrow(() => (xql as any)(`${cte}${body}`, { a: 1n, b: 1n }));
 });
+
+test("data-modifying CTE bodies resolve through RETURNING", () => {
+  const { xql } = mk();
+  const cases: [string, string[]][] = [
+    [`with updated as (update product p1 set title = :t where p1.id = :id returning p1.id, p1.price) select * from updated`, ["id", "price"]],
+    [`with created as (insert into product (title) values (:t) returning id, title) select * from created`, ["id", "title"]],
+    [`with gone as (delete from product where id = :id returning id) select g.id from gone g`, ["id"]],
+  ];
+  for (const [q, expected] of cases) {
+    assert.deepEqual(Object.keys(((xql as any)(q, { t: "x", id: 1n })).rowSchema.shape), expected, q);
+  }
+  assert.throws(
+    () => (xql as any)(`with updated as (update product p1 set title = :t where p.id = :id returning p1.id) select * from updated`, { t: "x", id: 1n }),
+    (e: Error) => e instanceof XqlError && /^unknown table alias "p"/.test(e.message),
+  );
+});
