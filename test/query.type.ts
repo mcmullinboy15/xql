@@ -297,3 +297,23 @@ type _66 = Expect<Equal<
   RowOfQuery<S, "with t (a) as (select id from product) select t.a from t">,
   XqlError<'column alias lists on a CTE ("t" (...)) are not supported — name the columns in the CTE\'s own SELECT instead'>
 >>;
+
+// a param inside a CTE body types against that body's scope, not the main query's
+type _67 = Expect<Equal<
+  ParamsOfQuery<S, "with cheap as (select id from product where price < :max) select c.id from cheap c">,
+  { max: string }
+>>;
+type _68 = Expect<Equal<
+  ParamsOfQuery<S, "with t as (select id from product where title = :t) select t.id from t">,
+  { t: string }
+>>;
+// body params and main-query params merge
+type _69 = Expect<Equal<
+  ParamsOfQuery<S, "with t as (select id, title from product where title = :t) select t.id from t where t.id = :id">,
+  { id: bigint; t: string }
+>>;
+// params in two different CTE bodies both resolve
+type _70 = Expect<Equal<
+  ParamsOfQuery<S, "with a as (select id, title from product where title = :t), b as (select id from a where id = :n) select b.id from b">,
+  { n: bigint; t: string }
+>>;

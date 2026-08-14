@@ -134,6 +134,17 @@ const rows = await xql(
 //    ^? { title: string; sku: string | null }[]
 ```
 
+A parameter inside a CTE body is typed against that body's scope, so it resolves
+even when the CTE filters on a column it does not select. Body and main-query
+parameters are merged:
+
+```ts
+xql(`with cheap as (select id from product where price < :max)
+     select c.id from cheap c where c.id = :id`,
+  { max: "10.00", id: 1n });
+//   ^? { max: string; id: bigint }  — `max` from the body, `id` from the main query
+```
+
 Because each CTE is resolved before the next, a later CTE can build on an
 earlier one, and a column the CTE does not expose is an error:
 

@@ -589,11 +589,15 @@ type DropMaterialized<T extends readonly string[]> = T extends readonly [
 interface CteScope {
   schema: SchemaDef;
   main: string;
+  params: unknown;
 }
+
+type Flatten<T> = { [K in keyof T]: T[K] } & {};
 
 type ParseCteList<
   S extends SchemaDef,
   T extends readonly string[],
+  PAcc = {},
 > = T extends readonly [infer Name extends string, ...infer R extends string[]]
   ? R extends readonly ["(", ...string[]]
     ? XqlError<`column alias lists on a CTE ("${Name}" (...)) are not supported — name the columns in the CTE's own SELECT instead`>
@@ -601,27 +605,24 @@ type ParseCteList<
           items: readonly string[];
           rest: readonly string[];
         }
-      ? RowOfSelect<S, Join<G["items"], " ">> extends infer Row
-        ? [Row] extends [XqlError<string>]
-          ? Row
-          : S & { [K in Name]: AsTableDef<Row> } extends infer S2 extends
-                SchemaDef
-            ? G["rest"] extends readonly [",", ...infer R2 extends string[]]
-              ? ParseCteList<S2, R2>
-              : { schema: S2; main: Join<G["rest"], " "> }
+      ? ParseSelectQuery<S, Join<G["items"], " ">> extends infer B
+        ? [B] extends [XqlError<string>]
+          ? B
+          : B extends { row: infer Row; params: infer BParams }
+            ? S & { [K in Name]: AsTableDef<Row> } extends infer S2 extends
+                  SchemaDef
+              ? G["rest"] extends readonly [",", ...infer R2 extends string[]]
+                ? ParseCteList<S2, R2, PAcc & BParams>
+                : {
+                    schema: S2;
+                    main: Join<G["rest"], " ">;
+                    params: PAcc & BParams;
+                  }
+              : never
             : never
         : never
       : never
   : XqlError<"malformed WITH clause">;
-
-type RowOfSelect<S extends SchemaDef, Q extends string> =
-  ParseSelectQuery<S, Q> extends infer P
-    ? [P] extends [XqlError<string>]
-      ? P
-      : P extends { row: infer R }
-        ? R
-        : never
-    : never;
 
 type IsRecursive<T extends readonly string[]> = T extends readonly [
   infer H extends string,
@@ -641,7 +642,13 @@ type WithCtes<S extends SchemaDef, Q extends string> =
           ? [C] extends [XqlError<string>]
             ? C
             : C extends CteScope
-              ? ParseSelectQuery<C["schema"], C["main"], StripMarkers<Q>>
+              ? ParseSelectQuery<C["schema"], C["main"]> extends infer M
+                ? [M] extends [XqlError<string>]
+                  ? M
+                  : M extends { row: infer R; params: infer MParams }
+                    ? { row: R; params: Flatten<C["params"] & MParams> }
+                    : never
+                : never
               : never
           : never
       : never

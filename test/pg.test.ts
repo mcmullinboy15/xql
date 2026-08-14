@@ -286,3 +286,12 @@ test("select * over a CTE expands to the CTE's columns only", async () => {
   assert.deepEqual(Object.keys(rows[0]!), ["id", "price"]);
   assert.deepEqual(rows, [{ id: 1n, price: "19.99" }]);
 });
+
+test("a param inside a CTE body binds and executes", async () => {
+  const rows = await xql(
+    `with cheap as (select id, title from product where price < :max and id <= :maxId)
+     select c.title from cheap c order by c.title`,
+    { max: "10.00", maxId: 3n },
+  );
+  assert.deepEqual(rows.map((r) => r.title), ["sock"]);
+});
