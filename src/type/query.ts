@@ -368,6 +368,21 @@ type ResolveBareRef<
  * Postgres allows output names in GROUP BY / ORDER BY but not WHERE / HAVING,
  * so the walk tracks which clause it is in.
  */
+type SkipBalanced<
+  T extends readonly string[],
+  Depth extends 1[] = [1],
+> = T extends readonly [infer H extends string, ...infer R extends string[]]
+  ? H extends "("
+    ? SkipBalanced<R, [...Depth, 1]>
+    : H extends ")"
+      ? Depth extends [1, ...infer Rest extends 1[]]
+        ? Rest extends []
+          ? R
+          : SkipBalanced<R, Rest>
+        : R
+      : SkipBalanced<R, Depth>
+  : [];
+
 type CheckTailRefs<
   S extends SchemaDef,
   E extends readonly FromEntry[],
@@ -376,7 +391,13 @@ type CheckTailRefs<
   Prev extends string = "",
   AllowOut extends boolean = false,
 > = Toks extends readonly [infer H extends string, ...infer R extends string[]]
-  ? Lowercase<H> extends "where" | "having"
+  ? Lowercase<H> extends "union" | "intersect" | "except"
+    ? null
+    : H extends "("
+      ? Lowercase<NextTok<R>> extends "select"
+        ? CheckTailRefs<S, E, Out, SkipBalanced<R>, H, AllowOut>
+        : CheckTailRefs<S, E, Out, R, H, AllowOut>
+      : Lowercase<H> extends "where" | "having"
     ? CheckTailRefs<S, E, Out, R, H, false>
     : Lowercase<H> extends "group" | "order"
       ? CheckTailRefs<S, E, Out, R, H, true>
