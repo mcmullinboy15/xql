@@ -295,3 +295,54 @@ test("a param inside a CTE body binds and executes", async () => {
   );
   assert.deepEqual(rows.map((r) => r.title), ["sock"]);
 });
+
+test("the main query joins two CTEs and executes", async () => {
+  const rows = await xql(
+    `with p as (select id, title from product where id <= :maxId),
+          v as (select product_id, sku from variant)
+     select p.title, v.sku
+     from p join v on v.product_id = p.id
+     order by v.sku`,
+    { maxId: 3n },
+  );
+  // product 1 has two variants, one of which has a null sku
+  assert.deepEqual(rows, [
+    { title: "shirt", sku: "SHIRT-S" },
+    { title: "shirt", sku: null },
+  ]);
+});
+
+test("LEFT JOIN between two CTEs produces real nulls", async () => {
+  const rows = await xql(
+    `with p as (select id, title from product where id <= :maxId),
+          v as (select product_id, sku from variant)
+     select p.title, v.product_id
+     from p left join v on v.product_id = p.id
+     order by p.title, v.product_id`,
+    { maxId: 2n },
+  );
+  assert.deepEqual(rows, [
+    { title: "hat", product_id: null },
+    { title: "shirt", product_id: 1n },
+    { title: "shirt", product_id: 1n },
+  ]);
+});
+
+test("three chained CTEs execute", async () => {
+  const rows = await xql(
+    `with a as (select id, title, price from product where price is not null),
+          b as (select id, title from a),
+          c as (select title from b)
+     select c.title from c order by c.title`,
+  );
+  assert.deepEqual(rows.map((r) => r.title), ["shirt", "sock"]);
+});
+
+test("a CTE may shadow a real table", async () => {
+  const rows = await xql(
+    `with product as (select id, title from product where id = :id)
+     select product.title from product`,
+    { id: 1n },
+  );
+  assert.deepEqual(rows, [{ title: "shirt" }]);
+});

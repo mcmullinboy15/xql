@@ -145,8 +145,11 @@ xql(`with cheap as (select id from product where price < :max)
 //   ^? { max: string; id: bigint }  — `max` from the body, `id` from the main query
 ```
 
-Because each CTE is resolved before the next, a later CTE can build on an
-earlier one, and a column the CTE does not expose is an error:
+Several CTEs work the way you would expect: the main query can join them, they
+can chain, and they can be independent. Because each is resolved before the next,
+a later CTE can build on an earlier one but not the reverse, and a CTE may shadow
+a real table — its body sees the table, the main query sees the CTE, exactly as
+Postgres does. A column the CTE does not expose is an error:
 
 ```ts
 xql(`with recent as (select id from product) select r.title from recent r`);
@@ -305,6 +308,8 @@ design costs exactly one pair of parentheses, and buys everything else.
 - Column alias lists (`with t (a, b) as ...`) are rejected; name the columns in
   the CTE's own SELECT instead.
 - Data-modifying CTEs (`with x as (insert ... returning ...)`) are not typed.
+- `SELECT` without a `FROM` clause is not supported, in a CTE body or anywhere
+  else — every query needs a table expression.
 - Subqueries in `FROM` are not parsed. They are rejected, but the message talks
   about an unknown alias rather than naming the real cause.
 - Subqueries in `WHERE` do work — `where id in (select ...)` is fine, because the

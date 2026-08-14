@@ -317,3 +317,45 @@ type _70 = Expect<Equal<
   ParamsOfQuery<S, "with a as (select id, title from product where title = :t), b as (select id from a where id = :n) select b.id from b">,
   { n: bigint; t: string }
 >>;
+
+// ---- multiple CTEs -----------------------------------------------------------
+// the main query can join two CTEs
+type _71 = Expect<Equal<
+  RowOfQuery<S, "with a as (select id, title from product), b as (select product_id, sku from variant) select a.title, b.sku from a join b on b.product_id = a.id">,
+  { title: string; sku: string | null }
+>>;
+// LEFT JOIN between two CTEs still widens the right side
+type _72 = Expect<Equal<
+  RowOfQuery<S, "with a as (select id, title from product), b as (select product_id, sku from variant) select a.title, b.product_id from a left join b on b.product_id = a.id">,
+  { title: string; product_id: bigint | null }
+>>;
+// three CTEs, each building on the last
+type _73 = Expect<Equal<
+  RowOfQuery<S, "with a as (select id, title from product), b as (select id, title from a), c as (select title from b) select c.title from c">,
+  { title: string }
+>>;
+// independent CTEs, comma-joined in the main query
+type _74 = Expect<Equal<
+  RowOfQuery<S, "with a as (select id from product), b as (select sku from variant) select a.id, b.sku from a, b">,
+  { id: bigint; sku: string | null }
+>>;
+// an error in the SECOND body is reported against that body's scope
+type _75 = Expect<Equal<
+  RowOfQuery<S, "with a as (select id from product), b as (select nope from a) select b.nope from b">,
+  XqlError<'unknown column "nope" — not on any table in scope (a)'>
+>>;
+// a CTE cannot reference one declared after it
+type _76 = Expect<Equal<
+  RowOfQuery<S, "with a as (select id from b), b as (select id from product) select a.id from a">,
+  XqlError<'unknown column "id" — not on any table in scope (b)'>
+>>;
+// a CTE may shadow a real table: the body sees the table, the main query the CTE
+type _77 = Expect<Equal<
+  RowOfQuery<S, "with product as (select id from product) select product.id from product">,
+  { id: bigint }
+>>;
+// selecting a column the second CTE dropped is an error
+type _78 = Expect<Equal<
+  RowOfQuery<S, "with a as (select id, title from product), b as (select id from a) select b.title from b">,
+  XqlError<'unknown column "title" on table "b"'>
+>>;

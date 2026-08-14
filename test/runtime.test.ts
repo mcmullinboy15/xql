@@ -340,3 +340,28 @@ test("unknown and ambiguous bare column refs are rejected", () => {
     assert.throws(() => (xql as any)(q), (e: Error) => e instanceof XqlError && re.test(e.message), q);
   }
 });
+
+test("multiple CTEs: chained, independent, joined, and shadowing", () => {
+  const { xql } = mk();
+  const cases: [string, string[]][] = [
+    [`with a as (select id, title from product), b as (select product_id, sku from variant) select a.title, b.sku from a join b on b.product_id = a.id`, ["title", "sku"]],
+    [`with a as (select id, title from product), b as (select id, title from a), c as (select title from b) select c.title from c`, ["title"]],
+    [`with a as (select id from product), b as (select sku from variant) select a.id, b.sku from a, b`, ["id", "sku"]],
+    [`with product as (select id from product) select product.id from product`, ["id"]],
+  ];
+  for (const [q, expected] of cases) {
+    assert.deepEqual(Object.keys(((xql as any)(q)).rowSchema.shape), expected, q);
+  }
+});
+
+test("multiple CTEs: errors point at the right body", () => {
+  const { xql } = mk();
+  const cases: [string, RegExp][] = [
+    [`with a as (select id from product), b as (select nope from a) select b.nope from b`, /^unknown column "nope" — not on any table in scope \(a\)/],
+    [`with a as (select id from b), b as (select id from product) select a.id from a`, /^unknown column "id" — not on any table in scope \(b\)/],
+    [`with a as (select id, title from product), b as (select id from a) select b.title from b`, /^unknown column "title" on table "b"/],
+  ];
+  for (const [q, re] of cases) {
+    assert.throws(() => (xql as any)(q), (e: Error) => e instanceof XqlError && re.test(e.message), q);
+  }
+});
