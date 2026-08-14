@@ -241,3 +241,15 @@ type _53 = Expect<Equal<
   RowOfQuery<S, "select p.title from product p order by price + 1 desc">,
   { title: string }
 >>;
+
+// direction keywords are case-insensitive, and malformed suffixes are rejected
+type _54 = Expect<Equal<RowOfQuery<S, "select id from product order by id ASC">, { id: bigint }>>;
+type _55 = Expect<Equal<RowOfQuery<S, "select id from product order by id DESC NULLS FIRST">, { id: bigint }>>;
+type _56 = Expect<Equal<
+  RowOfQuery<S, "select id from product order by id asc desc">,
+  XqlError<'invalid ORDER BY direction in "id asc desc" — use asc or desc, optionally followed by nulls first/last'>
+>>;
+type _57 = Expect<Equal<
+  RowOfQuery<S, "select id from product order by id nulls">,
+  XqlError<'invalid ORDER BY direction in "id nulls" — use asc or desc, optionally followed by nulls first/last'>
+>>;

@@ -228,6 +228,9 @@ test("ORDER BY direction must be asc or desc", () => {
     `select id from product order by id ascending`,
     `select id from product order by title desc, id descx`,
     `select id from product order by id nulls sideways`,
+    `select id from product order by id asc desc`,
+    `select id from product order by id nulls`,
+    `select id from product order by id first`,
   ]) {
     assert.throws(() => (xql as any)(q), (e: Error) =>
       e instanceof XqlError && /^invalid ORDER BY direction/.test(e.message), q);
@@ -240,6 +243,10 @@ test("ORDER BY accepts every valid direction form, and leaves expressions alone"
     `select id from product order by id`,
     `select id from product order by id desc`,
     `select id from product order by id asc nulls last`,
+    `select id from product order by id ASC`,
+    `select id from product order by id DESC`,
+    `select id from product order by id Desc`,
+    `select id from product order by id desc NULLS FIRST`,
     `select id from product order by title, id desc limit 10`,
     `select id from product order by price + 1 desc`,
     `select id from product where title = 'a limit b'`,
