@@ -102,13 +102,23 @@ export interface CastTypes {
   int: number;
   integer: number;
   smallint: number;
+  int2: number;
+  serial: number;
+  serial4: number;
+  serial8: bigint;
+  bigserial: bigint;
+  oid: number;
   float8: number;
   float: number;
+  float4: number;
   real: number;
   "double precision": number;
   text: string;
+  string: string;
   varchar: string;
   char: string;
+  bpchar: string;
+  name: string;
   bool: boolean;
   boolean: boolean;
   numeric: string;
@@ -116,7 +126,13 @@ export interface CastTypes {
   timestamptz: Date;
   timestamp: Date;
   date: Date;
+  time: string;
+  timetz: string;
+  interval: string;
   uuid: string;
+  inet: string;
+  bit: string;
+  varbit: string;
   bytes: Uint8Array;
   bytea: Uint8Array;
   json: unknown;
@@ -130,13 +146,23 @@ export const castZod: Record<string, Codec<unknown>> = {
   int: asNumber,
   integer: asNumber,
   smallint: asNumber,
+  int2: asNumber,
+  serial: asNumber,
+  serial4: asNumber,
+  serial8: asBigint,
+  bigserial: asBigint,
+  oid: asNumber,
   float8: asNumber,
   float: asNumber,
+  float4: asNumber,
   real: asNumber,
   "double precision": asNumber,
   text: z.string(),
+  string: z.string(),
   varchar: z.string(),
   char: z.string(),
+  bpchar: z.string(),
+  name: z.string(),
   bool: asBoolean,
   boolean: asBoolean,
   numeric: asNumericString,
@@ -144,7 +170,13 @@ export const castZod: Record<string, Codec<unknown>> = {
   timestamptz: asDate,
   timestamp: asDate,
   date: asDate,
+  time: z.string(),
+  timetz: z.string(),
+  interval: z.string(),
   uuid: z.string(),
+  inet: z.string(),
+  bit: z.string(),
+  varbit: z.string(),
   bytes: asBytes,
   bytea: asBytes,
   json: z.unknown(),

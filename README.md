@@ -298,7 +298,10 @@ xql(`select array_agg(a.label)::text[] as labels from asset a`);
 //   ^? { labels: string[] }[]
 ```
 
-`bytes` and `bytea` are the same type; the first is CockroachDB's spelling.
+CockroachDB and Postgres spell several types differently and both are accepted:
+`string`/`text`, `bytes`/`bytea`, `int2`/`smallint`, `float4`/`real`. In a
+CockroachDB codebase `::string` is the single most common cast, so it matters
+that it resolves rather than erroring.
 
 `LIMIT` / `OFFSET` must take a count — a non-negative integer, `ALL`, or a
 parameter (typed as `number | bigint`, not an arbitrary value). `ORDER BY`

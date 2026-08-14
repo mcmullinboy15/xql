@@ -526,3 +526,17 @@ test("subquery and set-operator scopes are not resolved against the outer query"
       e instanceof XqlError && /^unknown column "nope"/.test(e.message), q);
   }
 });
+
+test("CockroachDB type aliases decode like their Postgres equivalents", async () => {
+  const things = defineSchema({ thing: { id: t.int8(), label: t.text() } });
+  const run = (rows: unknown[]) => createXql(things, { query: async () => rows });
+
+  assert.deepEqual(await run([{ s: "7" }])(`select id::string as s from thing`).rows(), [{ s: "7" }]);
+  assert.deepEqual(await run([{ a: 3 }])(`select id::int2 as a from thing`).rows(), [{ a: 3 }]);
+  assert.deepEqual(await run([{ a: 9n }])(`select id::bigserial as a from thing`).rows(), [{ a: 9n }]);
+  assert.deepEqual(await run([{ s: ["a"] }])(`select id::string[] as s from thing`).rows(), [{ s: ["a"] }]);
+  // still typed, not a free pass: a wrong value is refused
+  await assert.rejects(() => run([{ s: 7 }])(`select id::string as s from thing`).rows());
+  assert.throws(() => (run([]) as any)(`select id::nosuchtype as a from thing`), (e: Error) =>
+    e instanceof XqlError && /^unknown cast type "nosuchtype"/.test(e.message));
+});
