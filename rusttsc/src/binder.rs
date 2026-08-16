@@ -8,12 +8,14 @@
 //! introduces them progressively at their declaration site so that using a name
 //! before it is declared is a "Cannot find name" error rather than resolving.
 //!
-//! The binder also resolves type *annotations* to `TypeId`s, since a function's
-//! hoisted type needs its parameter and return annotations up front.
+//! The binder also resolves type *annotations* to `TypeId`s (through the shared
+//! [`TypeResolver`], so aliases and conditional types work in signatures), since
+//! a function's hoisted type needs its parameter and return annotations up front.
 
 use crate::ast::{Ast, Node, NodeId, Param};
 use crate::diagnostics::{Code, Diagnostic};
 use crate::symbols::{ScopeId, Symbol, SymbolKind, SymbolStore};
+use crate::typeres::{AliasStore, TypeResolver};
 use crate::types::{TypeId, TypeStore};
 use std::collections::HashMap;
 
@@ -28,6 +30,8 @@ pub struct Binder<'a> {
     ast: &'a Ast,
     symbols: &'a mut SymbolStore,
     types: &'a mut TypeStore,
+    aliases: &'a AliasStore,
+    resolver: &'a mut TypeResolver,
     diags: &'a mut Vec<Diagnostic>,
     container_scope: HashMap<NodeId, ScopeId>,
 }
@@ -37,12 +41,16 @@ impl<'a> Binder<'a> {
         ast: &'a Ast,
         symbols: &'a mut SymbolStore,
         types: &'a mut TypeStore,
+        aliases: &'a AliasStore,
+        resolver: &'a mut TypeResolver,
         diags: &'a mut Vec<Diagnostic>,
     ) -> Binder<'a> {
         Binder {
             ast,
             symbols,
             types,
+            aliases,
+            resolver,
             diags,
             container_scope: HashMap::new(),
         }
@@ -76,16 +84,18 @@ impl<'a> Binder<'a> {
                 ..
             } = self.ast.get(s)
             {
-                let ty = self.function_type(params, *ret_ann);
+                let (name, name_span, params, ret_ann) =
+                    (name.clone(), *name_span, params.clone(), *ret_ann);
+                let ty = self.function_type(&params, ret_ann);
                 let sym = Symbol {
                     name: name.clone(),
                     kind: SymbolKind::Function,
                     ty: Some(ty),
-                    decl_span: *name_span,
+                    decl_span: name_span,
                 };
                 if self.symbols.declare(scope, sym).is_err() {
                     self.diags.push(Diagnostic::error(
-                        *name_span,
+                        name_span,
                         Code::Redeclaration,
                         format!("Cannot redeclare block-scoped variable '{}'.", name),
                     ));
@@ -159,70 +169,19 @@ impl<'a> Binder<'a> {
             .iter()
             .map(|p| {
                 p.type_ann
-                    .map(|a| resolve_type_ann(self.ast, self.types, self.diags, a))
+                    .map(|a| self.resolve_type(a))
                     .unwrap_or(self.types.any)
             })
             .collect();
         let ret = ret_ann
-            .map(|a| resolve_type_ann(self.ast, self.types, self.diags, a))
+            .map(|a| self.resolve_type(a))
             .unwrap_or(self.types.any);
         self.types.function(param_types, ret)
     }
 
     fn resolve_type(&mut self, id: NodeId) -> TypeId {
-        resolve_type_ann(self.ast, self.types, self.diags, id)
-    }
-}
-
-/// Resolve a type-annotation node to a `TypeId`. Shared by the binder (function
-/// signatures, parameters) and the checker (variable annotations), so both
-/// agree on exactly what `number | string` or an unknown name means.
-pub fn resolve_type_ann(
-    ast: &Ast,
-    types: &mut TypeStore,
-    diags: &mut Vec<Diagnostic>,
-    id: NodeId,
-) -> TypeId {
-    match ast.get(id) {
-        Node::TypeRef { name, span } => {
-            let span = *span;
-            match name.as_str() {
-                "number" => types.number,
-                "string" => types.string,
-                "boolean" => types.boolean,
-                "any" => types.any,
-                "unknown" => types.unknown,
-                "never" => types.never,
-                "void" => types.void,
-                "null" => types.null,
-                "undefined" => types.undefined,
-                "true" => types.boolean_literal(true),
-                "false" => types.boolean_literal(false),
-                other => {
-                    diags.push(Diagnostic::error(
-                        span,
-                        Code::CannotFindName,
-                        format!("Cannot find name '{}'.", other),
-                    ));
-                    types.any
-                }
-            }
-        }
-        Node::TypeUnion { members, .. } => {
-            let members = members.clone();
-            let resolved: Vec<TypeId> = members
-                .iter()
-                .map(|&m| resolve_type_ann(ast, types, diags, m))
-                .collect();
-            types.union(resolved)
-        }
-        Node::LiteralType { value, .. } => match value.clone() {
-            crate::ast::LitType::Str(s) => types.string_literal(s),
-            crate::ast::LitType::Num(n) => types.number_literal(n),
-            crate::ast::LitType::Bool(b) => types.boolean_literal(b),
-        },
-        // An error node in type position degrades to `any`.
-        _ => types.any,
+        self.resolver
+            .resolve(self.ast, self.types, self.aliases, self.diags, id)
     }
 }
 
@@ -230,7 +189,9 @@ pub fn bind(
     ast: &Ast,
     symbols: &mut SymbolStore,
     types: &mut TypeStore,
+    aliases: &AliasStore,
+    resolver: &mut TypeResolver,
     diags: &mut Vec<Diagnostic>,
 ) -> BindResult {
-    Binder::new(ast, symbols, types, diags).bind()
+    Binder::new(ast, symbols, types, aliases, resolver, diags).bind()
 }

@@ -9,6 +9,7 @@
 //! additionally prints the type-system work report — the observability angle
 //! that motivated a greenfield representation in the first place.
 
+use rusttsc::typeres::InstantiationStats;
 use rusttsc::types::TypeStore;
 use rusttsc::Compilation;
 use std::process::ExitCode;
@@ -34,19 +35,23 @@ fn print_usage() {
     eprintln!(
         "rusttsc — a greenfield TypeScript checker (Stage 1)\n\n\
          USAGE:\n    \
-         rusttsc check <file.ts> [--profile-types]\n\n\
+         rusttsc check <file.ts> [--profile-types] [--no-instantiation-cache]\n\n\
          OPTIONS:\n    \
-         --profile-types    print type-system work (instantiations, cache hits)\n    \
-         -h, --help         show this help"
+         --profile-types              print type-system work (instantiations, cache hits)\n    \
+         --no-instantiation-cache     disable the instantiation memo (shows the\n    \
+         \x20                            exponential work memoization avoids)\n    \
+         -h, --help                   show this help"
     );
 }
 
 fn run_check(rest: &[String]) -> ExitCode {
     let mut profile = false;
+    let mut cache_enabled = true;
     let mut path: Option<&str> = None;
     for arg in rest {
         match arg.as_str() {
             "--profile-types" => profile = true,
+            "--no-instantiation-cache" => cache_enabled = false,
             other if other.starts_with('-') => {
                 eprintln!("rusttsc: unknown option '{other}'");
                 return ExitCode::FAILURE;
@@ -69,7 +74,7 @@ fn run_check(rest: &[String]) -> ExitCode {
     };
 
     let start = Instant::now();
-    let compilation = Compilation::compile(path, source);
+    let compilation = Compilation::compile_with(path, source, cache_enabled);
     let elapsed = start.elapsed();
 
     let text = compilation.render_diagnostics();
@@ -86,7 +91,7 @@ fn run_check(rest: &[String]) -> ExitCode {
     }
 
     if profile {
-        print_profile(&compilation.types, elapsed);
+        print_profile(&compilation.types, &compilation.resolver.stats, elapsed);
     }
 
     if errors == 0 {
@@ -96,16 +101,48 @@ fn run_check(rest: &[String]) -> ExitCode {
     }
 }
 
-/// The `--profile-types` report. In Stage 1 the "expensive types" table is not
-/// yet per-alias (there are no generics to instantiate), so we report the
-/// aggregate type-system work: how many distinct types the program produced,
-/// how much of that construction was served from the intern table, and how the
-/// assignability relation cache performed.
-fn print_profile(types: &TypeStore, elapsed: std::time::Duration) {
+/// The `--profile-types` report: a per-alias "top expensive types" table
+/// (ranked by instantiation count), the instantiation cache hit rate, the
+/// maximum instantiation depth, and the underlying type-store work. This is the
+/// observability the greenfield representation was chosen to make cheap.
+fn print_profile(types: &TypeStore, inst: &InstantiationStats, elapsed: std::time::Duration) {
+    let ranked = inst.ranked();
+
+    println!("\nType Checking: {:.3?}", elapsed);
+
+    if !ranked.is_empty() {
+        println!("\nType Instantiations");
+        println!("──────────────────────────────");
+        let width = ranked
+            .iter()
+            .map(|(n, _)| n.len())
+            .max()
+            .unwrap_or(0)
+            .max(4);
+        for (name, count) in &ranked {
+            println!("{:<width$}  {:>8}", name, count, width = width);
+        }
+        println!("\nMaximum instantiation depth: {}", inst.max_depth);
+        println!("Conditional-type evaluations: {}", inst.conditional_evals);
+        if inst.cache_disabled {
+            println!("Instantiation cache: DISABLED (--no-instantiation-cache)");
+            println!(
+                "  {} instantiations performed with no memoization",
+                inst.total_misses()
+            );
+        } else {
+            println!(
+                "Cache hit rate: {:.1}%  ({} hits, {} misses)",
+                inst.cache_hit_rate() * 100.0,
+                inst.total_hits(),
+                inst.total_misses()
+            );
+        }
+    }
+
     let s = &types.stats;
-    println!("\nType-system profile");
+    println!("\nType store");
     println!("──────────────────────────────");
-    println!("Wall time:              {:>10.3?}", elapsed);
     println!("Distinct types:         {:>10}", types.unique_count());
     println!("Type constructions:     {:>10}", s.intern_total());
     println!(

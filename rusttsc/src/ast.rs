@@ -109,10 +109,22 @@ pub enum Node {
         span: Span,
     },
 
+    // ---- type declarations ---------------------------------------------
+    /// `type Name<P...> = Body;` — a (possibly generic) type alias.
+    TypeAliasDecl {
+        name: String,
+        name_span: Span,
+        params: Vec<String>,
+        body: NodeId,
+        span: Span,
+    },
+
     // ---- type annotations ----------------------------------------------
-    /// A named type in type position: `number`, `string`, or a custom name.
+    /// A named type in type position, with optional type arguments:
+    /// `number`, a type-parameter reference `T`, or `Foo<number, string>`.
     TypeRef {
         name: String,
+        args: Vec<NodeId>,
         span: Span,
     },
     /// `A | B | C`.
@@ -123,6 +135,15 @@ pub enum Node {
     /// A literal type: `"x"`, `42`, `true`.
     LiteralType {
         value: LitType,
+        span: Span,
+    },
+    /// `Check extends Extends ? TrueType : FalseType` — the type-level
+    /// conditional that makes generic TypeScript "execute".
+    ConditionalType {
+        check: NodeId,
+        extends_ty: NodeId,
+        true_ty: NodeId,
+        false_ty: NodeId,
         span: Span,
     },
 }
@@ -151,9 +172,11 @@ impl Node {
             | Node::Ident { span, .. }
             | Node::Binary { span, .. }
             | Node::Call { span, .. }
+            | Node::TypeAliasDecl { span, .. }
             | Node::TypeRef { span, .. }
             | Node::TypeUnion { span, .. }
-            | Node::LiteralType { span, .. } => *span,
+            | Node::LiteralType { span, .. }
+            | Node::ConditionalType { span, .. } => *span,
             // Program has no single span; use an empty one at the origin.
             Node::Program { .. } => Span::new(0, 0),
         }
@@ -196,6 +219,12 @@ impl Ast {
     /// Number of nodes in the arena (always ≥ 1 — the root `Program`).
     pub fn node_count(&self) -> usize {
         self.nodes.len()
+    }
+
+    /// All nodes, for whole-arena scans (e.g. collecting type aliases wherever
+    /// they are declared, regardless of nesting).
+    pub fn nodes(&self) -> &[Node] {
+        &self.nodes
     }
 }
 

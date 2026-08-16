@@ -25,6 +25,9 @@ pub enum TokKind {
     Plus,
     Arrow, // =>
     Dot,
+    Lt,       // <
+    Gt,       // >
+    Question, // ?
     Eof,
 }
 
@@ -206,6 +209,9 @@ impl<'a> Lexer<'a> {
             b'=' => TokKind::Eq,
             b'+' => TokKind::Plus,
             b'.' => TokKind::Dot,
+            b'<' => TokKind::Lt,
+            b'>' => TokKind::Gt,
+            b'?' => TokKind::Question,
             _ => return None,
         };
         self.pos += 1;

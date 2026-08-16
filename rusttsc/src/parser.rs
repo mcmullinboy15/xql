@@ -5,9 +5,10 @@
 //!
 //! ```text
 //! program    := stmt*
-//! stmt       := varDecl | funcDecl | block | return | exprStmt
+//! stmt       := varDecl | funcDecl | typeAlias | block | return | exprStmt
 //! varDecl    := ('let'|'const'|'var') ident (':' type)? ('=' expr)? ';'?
 //! funcDecl   := 'function' ident '(' params? ')' (':' type)? block
+//! typeAlias  := 'type' ident ('<' ident (',' ident)* '>')? '=' type ';'?
 //! block      := '{' stmt* '}'
 //! return     := 'return' expr? ';'?
 //! exprStmt   := expr ';'?
@@ -16,8 +17,11 @@
 //! call       := primary ('(' args? ')')*
 //! primary    := number | string | 'true' | 'false' | 'null'
 //!             | ident | '(' expr ')'
-//! type       := typePrimary ('|' typePrimary)*
-//! typePrimary:= ident
+//! type       := union ('extends' union '?' type ':' type)?   // conditional
+//! union      := '|'? typePrimary ('|' typePrimary)*
+//! typePrimary:= number | string | 'true' | 'false'           // literal types
+//!             | ident ('<' type (',' type)* '>')?            // ref + type args
+//!             | '(' type ')'
 //! ```
 //!
 //! On a syntax error the parser records a diagnostic, drops an [`Node::Error`]
@@ -67,6 +71,14 @@ impl<'a> Parser<'a> {
 
     fn peek_kind(&self) -> TokKind {
         self.toks[self.pos].kind
+    }
+
+    /// Kind of the token `n` positions ahead, saturating at `Eof`.
+    fn nth_kind(&self, n: usize) -> TokKind {
+        self.toks
+            .get(self.pos + n)
+            .map(|t| t.kind)
+            .unwrap_or(TokKind::Eof)
     }
 
     fn at_eof(&self) -> bool {
@@ -147,6 +159,11 @@ impl<'a> Parser<'a> {
         }
         if self.at_keyword("return") {
             return self.parse_return();
+        }
+        // `type` is only a keyword when a name follows it; `type` on its own is
+        // an ordinary identifier expression.
+        if self.at_keyword("type") && self.nth_kind(1) == TokKind::Ident {
+            return self.parse_type_alias();
         }
         if self.peek_kind() == TokKind::LBrace {
             return self.parse_block();
@@ -383,9 +400,76 @@ impl<'a> Parser<'a> {
         }
     }
 
+    // ---- type declarations ----------------------------------------------
+
+    fn parse_type_alias(&mut self) -> NodeId {
+        let kw = self.bump(); // 'type'
+        let name_tok = self.bump(); // the name (guaranteed Ident by the caller)
+
+        let params = self.parse_type_params();
+        self.expect(TokKind::Eq, "=");
+        let body = self.parse_type();
+        let end = self.peek().span;
+        self.eat(TokKind::Semi);
+        self.ast.alloc(Node::TypeAliasDecl {
+            name: name_tok.text,
+            name_span: name_tok.span,
+            params,
+            body,
+            span: kw.span.to(end),
+        })
+    }
+
+    /// Parse an optional `<P1, P2, ...>` declaration parameter list.
+    fn parse_type_params(&mut self) -> Vec<String> {
+        let mut params = Vec::new();
+        if !self.eat(TokKind::Lt) {
+            return params;
+        }
+        while self.peek_kind() != TokKind::Gt && !self.at_eof() {
+            if self.peek_kind() == TokKind::Ident {
+                params.push(self.bump().text);
+            } else {
+                break;
+            }
+            if !self.eat(TokKind::Comma) {
+                break;
+            }
+        }
+        self.expect(TokKind::Gt, ">");
+        params
+    }
+
     // ---- types ----------------------------------------------------------
 
+    /// The lowest-precedence type production is the conditional; its check type
+    /// is a union (or tighter), matching TypeScript's grammar.
     fn parse_type(&mut self) -> NodeId {
+        let check = self.parse_union_type();
+        if !self.at_keyword("extends") {
+            return check;
+        }
+        self.bump(); // 'extends'
+        let extends_ty = self.parse_union_type();
+        self.expect(TokKind::Question, "?");
+        let true_ty = self.parse_type();
+        self.expect(TokKind::Colon, ":");
+        // Right-associative: `A extends B ? C : D extends E ? F : G` nests on
+        // the false branch.
+        let false_ty = self.parse_type();
+        let span = self.ast.get(check).span().to(self.ast.get(false_ty).span());
+        self.ast.alloc(Node::ConditionalType {
+            check,
+            extends_ty,
+            true_ty,
+            false_ty,
+            span,
+        })
+    }
+
+    fn parse_union_type(&mut self) -> NodeId {
+        // A leading `|` is allowed and ignored, as in TypeScript.
+        self.eat(TokKind::Pipe);
         let first = self.parse_type_primary();
         if self.peek_kind() != TokKind::Pipe {
             return first;
@@ -419,6 +503,13 @@ impl<'a> Parser<'a> {
                     span: t.span,
                 })
             }
+            // A parenthesized type, so `(A | B) extends C ? ...` groups.
+            TokKind::LParen => {
+                self.bump();
+                let inner = self.parse_type();
+                self.expect(TokKind::RParen, ")");
+                inner
+            }
             TokKind::Ident => {
                 self.bump();
                 match t.text.as_str() {
@@ -426,10 +517,18 @@ impl<'a> Parser<'a> {
                         value: LitType::Bool(t.text == "true"),
                         span: t.span,
                     }),
-                    _ => self.ast.alloc(Node::TypeRef {
-                        name: t.text,
-                        span: t.span,
-                    }),
+                    _ => {
+                        let args = self.parse_type_args();
+                        let span = args
+                            .last()
+                            .map(|&a| t.span.to(self.ast.get(a).span()))
+                            .unwrap_or(t.span);
+                        self.ast.alloc(Node::TypeRef {
+                            name: t.text,
+                            args,
+                            span,
+                        })
+                    }
                 }
             }
             _ => {
@@ -437,6 +536,23 @@ impl<'a> Parser<'a> {
                 self.error_node(span, "Type expected.")
             }
         }
+    }
+
+    /// Parse an optional `<Arg1, Arg2, ...>` type-argument list at a use site.
+    fn parse_type_args(&mut self) -> Vec<NodeId> {
+        let mut args = Vec::new();
+        if self.peek_kind() != TokKind::Lt {
+            return args;
+        }
+        self.bump(); // '<'
+        while self.peek_kind() != TokKind::Gt && !self.at_eof() {
+            args.push(self.parse_type());
+            if !self.eat(TokKind::Comma) {
+                break;
+            }
+        }
+        self.expect(TokKind::Gt, ">");
+        args
     }
 }
 

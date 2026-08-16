@@ -12,10 +12,11 @@
 //! * a call must target a function, with the right arity and assignable args.
 
 use crate::ast::{BinOp, Node, NodeId};
-use crate::binder::{resolve_type_ann, BindResult};
+use crate::binder::BindResult;
 use crate::diagnostics::{Code, Diagnostic};
 use crate::span::Span;
 use crate::symbols::{ScopeId, Symbol, SymbolKind, SymbolStore};
+use crate::typeres::{AliasStore, TypeResolver};
 use crate::types::{Type, TypeId, TypeStore};
 
 pub struct Checker<'a> {
@@ -23,6 +24,8 @@ pub struct Checker<'a> {
     bind: &'a BindResult,
     symbols: &'a mut SymbolStore,
     types: &'a mut TypeStore,
+    aliases: &'a AliasStore,
+    resolver: &'a mut TypeResolver,
     diags: &'a mut Vec<Diagnostic>,
     /// Expected return type per enclosing function; `None` means "don't check"
     /// (an unannotated function whose return type we treat as `any`).
@@ -30,11 +33,14 @@ pub struct Checker<'a> {
 }
 
 impl<'a> Checker<'a> {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         ast: &'a crate::ast::Ast,
         bind: &'a BindResult,
         symbols: &'a mut SymbolStore,
         types: &'a mut TypeStore,
+        aliases: &'a AliasStore,
+        resolver: &'a mut TypeResolver,
         diags: &'a mut Vec<Diagnostic>,
     ) -> Checker<'a> {
         Checker {
@@ -42,9 +48,17 @@ impl<'a> Checker<'a> {
             bind,
             symbols,
             types,
+            aliases,
+            resolver,
             diags,
             return_stack: Vec::new(),
         }
+    }
+
+    /// Resolve a type-annotation node through the shared type-level evaluator.
+    fn resolve_type(&mut self, node: NodeId) -> TypeId {
+        self.resolver
+            .resolve(self.ast, self.types, self.aliases, self.diags, node)
     }
 
     pub fn check(&mut self) {
@@ -112,7 +126,7 @@ impl<'a> Checker<'a> {
         type_ann: Option<NodeId>,
         init: Option<NodeId>,
     ) {
-        let declared = type_ann.map(|a| resolve_type_ann(self.ast, self.types, self.diags, a));
+        let declared = type_ann.map(|a| self.resolve_type(a));
         // Infer the initializer type *before* the name is in scope, so
         // `const x = x` is a "cannot find name", not a self-reference.
         let init_ty = init.map(|e| self.type_of(e, scope));
@@ -169,7 +183,7 @@ impl<'a> Checker<'a> {
     ) {
         // The declared return type only *checks* returns when it was written
         // explicitly; an unannotated function accepts any return.
-        let expected = ret_ann.map(|a| resolve_type_ann(self.ast, self.types, self.diags, a));
+        let expected = ret_ann.map(|a| self.resolve_type(a));
         let expected = match expected {
             Some(t) if t != self.types.any => Some(t),
             _ => None,
@@ -326,12 +340,15 @@ impl<'a> Checker<'a> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn check(
     ast: &crate::ast::Ast,
     bind: &BindResult,
     symbols: &mut SymbolStore,
     types: &mut TypeStore,
+    aliases: &AliasStore,
+    resolver: &mut TypeResolver,
     diags: &mut Vec<Diagnostic>,
 ) {
-    Checker::new(ast, bind, symbols, types, diags).check();
+    Checker::new(ast, bind, symbols, types, aliases, resolver, diags).check();
 }

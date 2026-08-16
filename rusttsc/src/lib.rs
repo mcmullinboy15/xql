@@ -18,6 +18,7 @@ pub mod parser;
 pub mod program;
 pub mod span;
 pub mod symbols;
+pub mod typeres;
 pub mod types;
 
 pub use program::Compilation;

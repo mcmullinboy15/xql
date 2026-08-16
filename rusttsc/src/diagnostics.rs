@@ -44,6 +44,10 @@ pub enum Code {
     /// TS2355 "A function whose declared type is neither 'void' nor 'any' must
     /// return a value." — used here for a missing return where one is required.
     MissingReturn,
+    /// TS2314 "Generic type 'X' requires N type argument(s)."
+    TypeArgMismatch,
+    /// TS2589 "Type instantiation is excessively deep and possibly infinite."
+    ExcessiveDepth,
 }
 
 impl Code {
@@ -58,6 +62,8 @@ impl Code {
             Code::WrongArgCount => 2554,
             Code::Redeclaration => 2451,
             Code::MissingReturn => 2355,
+            Code::TypeArgMismatch => 2314,
+            Code::ExcessiveDepth => 2589,
         }
     }
 }

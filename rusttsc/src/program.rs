@@ -7,6 +7,7 @@
 use crate::ast::Ast;
 use crate::diagnostics::Diagnostic;
 use crate::symbols::SymbolStore;
+use crate::typeres::{AliasStore, TypeResolver};
 use crate::types::TypeStore;
 use crate::{binder, checker, lexer, parser};
 
@@ -17,12 +18,27 @@ pub struct Compilation {
     pub ast: Ast,
     pub symbols: SymbolStore,
     pub types: TypeStore,
+    pub aliases: AliasStore,
+    pub resolver: TypeResolver,
     pub diagnostics: Vec<Diagnostic>,
 }
 
 impl Compilation {
-    /// Run the whole pipeline over one source string.
+    /// Run the whole pipeline over one source string, with the instantiation
+    /// memo enabled.
     pub fn compile(file: impl Into<String>, source: impl Into<String>) -> Compilation {
+        Compilation::compile_with(file, source, true)
+    }
+
+    /// Run the pipeline, optionally disabling the instantiation memo cache — the
+    /// switch behind `--no-instantiation-cache`, which turns the memoized
+    /// (linear) instantiation of diamond-shaped generics back into the
+    /// exponential work it would otherwise be, so the difference is measurable.
+    pub fn compile_with(
+        file: impl Into<String>,
+        source: impl Into<String>,
+        cache_enabled: bool,
+    ) -> Compilation {
         let file = file.into();
         let source = source.into();
 
@@ -33,8 +49,29 @@ impl Compilation {
 
         let tokens = lexer::tokenize(&source, &mut diagnostics);
         parser::parse(tokens, &mut ast, &mut diagnostics);
-        let bind = binder::bind(&ast, &mut symbols, &mut types, &mut diagnostics);
-        checker::check(&ast, &bind, &mut symbols, &mut types, &mut diagnostics);
+
+        // Aliases are collected up front so they can be mutually recursive and
+        // referenced before their textual declaration.
+        let aliases = AliasStore::collect(&ast, &mut diagnostics);
+        let mut resolver = TypeResolver::new(cache_enabled);
+
+        let bind = binder::bind(
+            &ast,
+            &mut symbols,
+            &mut types,
+            &aliases,
+            &mut resolver,
+            &mut diagnostics,
+        );
+        checker::check(
+            &ast,
+            &bind,
+            &mut symbols,
+            &mut types,
+            &aliases,
+            &mut resolver,
+            &mut diagnostics,
+        );
 
         Compilation {
             file,
@@ -42,6 +79,8 @@ impl Compilation {
             ast,
             symbols,
             types,
+            aliases,
+            resolver,
             diagnostics,
         }
     }

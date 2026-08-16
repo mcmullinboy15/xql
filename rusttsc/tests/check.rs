@@ -155,6 +155,93 @@ fn syntax_error_recovers() {
     assert!(cs.contains(&Code::CannotFindName));
 }
 
+// ---- generics, aliases, and conditional types -----------------------------
+
+#[test]
+fn generic_alias_instantiates() {
+    assert_clean(r#"type Id<T> = T; const x: Id<number> = 1;"#);
+    assert_eq!(
+        codes(r#"type Id<T> = T; const x: Id<number> = "no";"#),
+        vec![Code::NotAssignable]
+    );
+}
+
+#[test]
+fn conditional_type_selects_a_branch() {
+    // IsNum<number> = true, so the `true` literal fits.
+    assert_clean(
+        r#"type IsNum<T> = T extends number ? true : false; const b: IsNum<number> = true;"#,
+    );
+    // IsNum<string> = false, so `true` no longer fits.
+    assert_eq!(
+        codes(r#"type IsNum<T> = T extends number ? true : false; const b: IsNum<string> = true;"#),
+        vec![Code::NotAssignable]
+    );
+}
+
+#[test]
+fn wrong_type_argument_count_is_reported() {
+    assert_eq!(
+        codes(r#"type P<T> = T; const x: P = 1;"#),
+        vec![Code::TypeArgMismatch]
+    );
+}
+
+#[test]
+fn unknown_type_name_is_reported() {
+    assert_eq!(codes("const x: Nope = 1;"), vec![Code::CannotFindName]);
+}
+
+#[test]
+fn infinitely_recursive_alias_is_bounded() {
+    // `Loop<T> = Loop<T>` never reduces; the depth guard must stop it and
+    // report TS2589 rather than hang.
+    let cs = codes(r#"type Loop<T> = Loop<T>; const x: Loop<number> = 1;"#);
+    assert!(cs.contains(&Code::ExcessiveDepth), "got: {cs:?}");
+}
+
+/// The core thesis, as an assertion: memoization turns the diamond's
+/// exponential instantiation into linear work. With the cache on, each alias is
+/// instantiated once (8 misses); with it off, the bottom alias alone is
+/// instantiated 2^7 times.
+#[test]
+fn memoization_makes_diamond_linear() {
+    let src = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/generic-diamond.ok.ts"),
+    )
+    .unwrap();
+
+    let cached = Compilation::compile_with("d.ts", &src, true);
+    let uncached = Compilation::compile_with("d.ts", &src, false);
+
+    let cached_misses = cached.resolver.stats.total_misses();
+    let uncached_misses = uncached.resolver.stats.total_misses();
+
+    // Cached: one instantiation per (alias, args) — 8 aliases, one arg each.
+    assert_eq!(
+        cached_misses, 8,
+        "expected linear instantiation with the cache"
+    );
+    // Uncached: the bottom alias alone instantiates 2^7 = 128 times, so total
+    // work is an order of magnitude larger.
+    assert!(
+        uncached_misses >= 128,
+        "expected exponential instantiation without the cache, got {uncached_misses}"
+    );
+    assert!(
+        uncached_misses > cached_misses * 10,
+        "cache should cut instantiations by >10x (cached={cached_misses}, uncached={uncached_misses})"
+    );
+    // Every alias past the first reference is a cache hit (8 distinct
+    // (alias, args) pairs → 8 unavoidable misses, 7 hits ≈ 47%).
+    assert!(
+        cached.resolver.stats.cache_hit_rate() > 0.4,
+        "hit rate was {}",
+        cached.resolver.stats.cache_hit_rate()
+    );
+}
+
 /// The fixture files under `tests/fixtures/` double as runnable examples and a
 /// regression corpus: `*.ok.ts` must check clean, `*.err.ts` must not.
 #[test]
