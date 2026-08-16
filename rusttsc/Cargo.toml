@@ -1,0 +1,22 @@
+[package]
+name = "rusttsc"
+version = "0.0.1"
+edition = "2021"
+description = "A greenfield, ID-arena TypeScript checker optimized for large codebases"
+license = "ISC"
+
+# Zero external dependencies on purpose: the whole point of the arena design is
+# to own our memory layout, and it keeps the crate building offline in a sandbox.
+[dependencies]
+
+[[bin]]
+name = "rusttsc"
+path = "src/main.rs"
+
+[lib]
+name = "rusttsc"
+path = "src/lib.rs"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
