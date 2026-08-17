@@ -731,6 +731,36 @@ function validDirection(rest: string[]): boolean {
   return i === l.length;
 }
 
+/**
+ * An ORDER BY item is `<expression> [asc|desc] [nulls first|last]`. Only the
+ * direction suffix is checkable — an expression may be a function call, a CASE,
+ * or arithmetic, none of which can be told from a malformed direction by shape
+ * alone. So the suffix is peeled off and validated, and the remainder is only
+ * questioned when it looks like a bare column followed by a stray word.
+ */
+function orderItemProblem(item: string): string | null {
+  const bad = `invalid ORDER BY direction in "${item}" — use asc or desc, optionally followed by nulls first/last`;
+  const head = words(item.replace(/;+$/, ""));
+  if (head.length === 0) return null;
+
+  const suffix: string[] = [];
+  while (head.length > 0 && DIR_WORDS.has(head[head.length - 1]!.toLowerCase()))
+    suffix.unshift(head.pop()!);
+
+  if (head.length === 0) return bad;
+  if (!validDirection(suffix)) return bad;
+  if (head.length === 1) return null;
+  // A direction word left inside the expression means a malformed suffix,
+  // such as `nulls sideways`.
+  if (head.slice(1).some((t) => DIR_WORDS.has(t.toLowerCase()))) return bad;
+  // `id ascending` is a typo; anything with parens, quotes or operators is an
+  // expression and is left alone.
+  const simple = (t: string) => !/[()'",+\-*/]/.test(t);
+  if (head.length === 2 && simple(head[0]!) && /^[A-Za-z_][A-Za-z0-9_]*$/.test(head[1]!))
+    return bad;
+  return null;
+}
+
 /** LIMIT/OFFSET take a count; ORDER BY items take asc/desc [nulls first|last]. */
 function checkTailKeywords(query: string): void {
   const toks = words(query.replace(/'[^']*'/g, "''"));
@@ -752,14 +782,8 @@ function checkTailKeywords(query: string): void {
       while (j < toks.length && !ORDER_STOP.has(toks[j]!.toLowerCase()))
         run.push(toks[j++]!);
       for (const raw of splitTopLevel(run.join(" "))) {
-        const item = raw.trim();
-        const rest = words(item).slice(1);
-        if (rest.length === 0) continue;
-        if (rest.some((t) => OP_WORDS.has(t))) continue;
-        if (!validDirection(rest))
-          throw new XqlError(
-            `invalid ORDER BY direction in "${item}" — use asc or desc, optionally followed by nulls first/last`,
-          );
+        const problem = orderItemProblem(raw.trim());
+        if (problem !== null) throw new XqlError(problem);
       }
     }
   }

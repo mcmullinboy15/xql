@@ -45,3 +45,33 @@ type _9 = Expect<Equal<
   RowOfQuery<S, "select distinct p.nope from product p">,
   XqlError<'unknown column "nope" on table "product"'>
 >>;
+
+// --- ORDER BY expressions are not directions -------------------------------
+// A function call, CASE or arithmetic in ORDER BY must not be read as a
+// malformed direction.
+type _e1 = Expect<Equal<
+  RowOfQuery<S, "select p.id from product p order by coalesce(p.price, p.title) desc">,
+  { id: bigint }
+>>;
+type _e2 = Expect<Equal<
+  RowOfQuery<S, "select p.id from product p order by case when p.id = 1 then 0 else 1 end">,
+  { id: bigint }
+>>;
+type _e3 = Expect<Equal<
+  RowOfQuery<S, "select p.id from product p order by case when p.id = 1 then 0 else 1 end desc">,
+  { id: bigint }
+>>;
+// a trailing semicolon is tolerated
+type _e4 = Expect<Equal<
+  RowOfQuery<S, "select p.id from product p order by p.id nulls first;">,
+  { id: bigint }
+>>;
+// ...while genuinely malformed suffixes are still caught
+type _e5 = Expect<Equal<
+  RowOfQuery<S, "select p.id from product p order by p.id asc desc">,
+  XqlError<'invalid ORDER BY direction in "p.id asc desc" — use asc or desc, optionally followed by nulls first/last'>
+>>;
+type _e6 = Expect<Equal<
+  RowOfQuery<S, "select p.id from product p order by p.id nulls">,
+  XqlError<'invalid ORDER BY direction in "p.id nulls" — use asc or desc, optionally followed by nulls first/last'>
+>>;
