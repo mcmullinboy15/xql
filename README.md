@@ -11,6 +11,25 @@ const rows = await xql(`select id, title from product where id = :id`, { id: 7n 
 //    ^? { id: bigint; title: string }[]
 ```
 
+## Production compiler
+
+PR #12 added an optional production compiler without changing the `xql(`...`)`
+API. `xql schema pull` captures the PostgreSQL catalog, `xql compile` parses
+queries with PostgreSQL's parser and generates concrete row/parameter types plus
+runtime validation metadata, and `--compiled-only` makes unsupported or
+unprovable SQL fail the build instead of silently widening.
+
+```bash
+xql schema pull
+xql schema verify
+xql compile --compiled-only
+```
+
+The same hardening work also added SQL-safe named-parameter binding, JOIN
+validation, PostgreSQL-correct aggregate types/nullability, prepared-query
+caching, transactions, streaming, cancellation/timeouts, query lifecycle hooks,
+and CI performance gates that exercise compiled XQL up to 25,000 queries.
+
 ## Composable, scope-aware sections
 
 Each section is its own value. `from` establishes the scope; `cols` and `where`
