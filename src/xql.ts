@@ -77,46 +77,51 @@ export interface XqlOptions {
   readonly onQuery?: (event: QueryEvent) => void;
 }
 
-type GeneratedInfo<Q extends string> =
-  Q extends keyof GeneratedQueryRegistry
-    ? GeneratedQueryRegistry[Q]
+type GeneratedKey = keyof GeneratedQueryRegistry & string;
+
+type GeneratedParams<Q extends GeneratedKey> =
+  GeneratedQueryRegistry[Q] extends GeneratedQueryInfo<unknown, infer P> ? P : never;
+
+type GeneratedParamsArg<Q extends GeneratedKey> =
+  [keyof GeneratedParams<Q>] extends [never]
+    ? []
+    : [params: GeneratedParams<Q>];
+
+type GeneratedResult<Q extends GeneratedKey> =
+  GeneratedQueryRegistry[Q] extends GeneratedQueryInfo<infer R, unknown>
+    ? Query<R>
     : never;
 
-type ParamsFor<S extends SchemaDef, Q extends string> =
-  Q extends keyof GeneratedQueryRegistry
-    ? GeneratedInfo<Q> extends GeneratedQueryInfo<unknown, infer P>
-      ? P
-      : never
-    : StrictParamsOfQuery<S, Q>;
-
-type ParamsArg<S extends SchemaDef, Q extends string> =
-  ParamsFor<S, Q> extends infer P
+type LegacyParamsArg<S extends SchemaDef, Q extends string> =
+  StrictParamsOfQuery<S, Q> extends infer P
     ? [keyof P] extends [never]
       ? []
       : [params: P]
     : [];
 
-type Result<S extends SchemaDef, Q extends string> =
-  Q extends keyof GeneratedQueryRegistry
-    ? GeneratedInfo<Q> extends GeneratedQueryInfo<infer R, unknown>
-      ? Query<R>
-      : never
-    : ValidateJoinRefs<S, Q> extends infer J
-      ? J extends XqlTypeError<string>
-        ? J
-        : ValidateStrictParams<S, Q> extends infer PErr
-          ? PErr extends XqlTypeError<string>
-            ? PErr
-            : RowOfQuery<S, Q> extends infer R
-              ? [R] extends [XqlTypeError<string>]
-                ? R
-                : Query<R>
-              : never
-          : never
-      : never;
+type LegacyResult<S extends SchemaDef, Q extends string> =
+  ValidateJoinRefs<S, Q> extends infer J
+    ? J extends XqlTypeError<string>
+      ? J
+      : ValidateStrictParams<S, Q> extends infer PErr
+        ? PErr extends XqlTypeError<string>
+          ? PErr
+          : RowOfQuery<S, Q> extends infer R
+            ? [R] extends [XqlTypeError<string>]
+              ? R
+              : Query<R>
+            : never
+        : never
+    : never;
 
 export interface Xql<S extends SchemaDef> {
-  <const Q extends string>(query: Q, ...args: ParamsArg<S, Q>): Result<S, Q>;
+  /** Fast path for compiler-generated exact literals. */
+  <const Q extends GeneratedKey>(query: Q, ...args: GeneratedParamsArg<Q>): GeneratedResult<Q>;
+  /** Zero-build fallback. Generated literals are excluded so they cannot bypass compiler types. */
+  <const Q extends string>(
+    query: Q extends GeneratedKey ? never : Q,
+    ...args: LegacyParamsArg<S, Q>
+  ): LegacyResult<S, Q>;
   cols<const T extends string>(text: T): `«c:${T}»`;
   from<const T extends string>(text: T): `«f:${T}»`;
   where<const T extends string>(text: T): `«w:${T}»`;
@@ -259,47 +264,34 @@ export function createXql<const S extends SchemaDef>(
           throw new XqlError(`expected exactly 1 row, got ${rows.length}`);
         return rows[0];
       },
-      first: async (execOptions?: QueryExecutionOptions) =>
-        (await run(execOptions))[0] ?? null,
-      rowCount: async (execOptions?: QueryExecutionOptions) =>
-        (await exec(execOptions)).rowCount,
+      first: async (execOptions?: QueryExecutionOptions) => {
+        const rows = await run(execOptions);
+        return rows[0] ?? null;
+      },
+      rowCount: async (execOptions?: QueryExecutionOptions) => {
+        const result = await exec(execOptions);
+        return result.rowCount;
+      },
       stream,
-      toSql: () => bound,
+      toSql: () => ({ text: bound.text, values: bound.values }),
       rowSchema: prepared.rowSchema,
-      then: (onOk: unknown, onErr: unknown) =>
-        run().then(
-          onOk as (v: unknown[]) => unknown,
-          onErr as (e: unknown) => unknown,
-        ),
+      then: <TResult1 = unknown[], TResult2 = never>(
+        onfulfilled?: ((value: unknown[]) => TResult1 | PromiseLike<TResult1>) | null,
+        onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
+      ) => run().then(onfulfilled, onrejected),
     };
   }
 
-  const marked = (kind: string) => (text: string) => `«${kind}:${text}»`;
-  const predicate =
-    (sep: string, empty: string) =>
-    (...parts: unknown[]) => {
-      const kept = parts.filter(
-        (p): p is string => typeof p === "string" && p.trim() !== "",
-      );
-      if (kept.length === 0) return `«w:${empty}»`;
-      return `«w:${kept.map((p) => `(${p})`).join(` ${sep} `)}»`;
-    };
-
-  const transaction = async <T>(run: (tx: Xql<S>) => Promise<T>): Promise<T> => {
+  call.cols = <T extends string>(text: T) => `«c:${text}»` as const;
+  call.from = <T extends string>(text: T) => `«f:${text}»` as const;
+  call.where = <T extends string>(text: T) => `«w:${text}»` as const;
+  call.and = (...parts: string[]) => `«w:${parts.filter(Boolean).join(" and ") || "true"}»`;
+  call.or = (...parts: string[]) => `«w:${parts.filter(Boolean).join(" or ") || "false"}»`;
+  call.transaction = async <T>(run: (tx: Xql<S>) => Promise<T>): Promise<T> => {
     if (adapter.transaction === undefined)
       throw new XqlError("this adapter does not implement transactions");
-    return adapter.transaction((txAdapter) =>
-      run(createXql(schema, txAdapter, options)),
-    );
+    return adapter.transaction((txAdapter) => run(createXql(schema, txAdapter, options)));
   };
-
-  return Object.assign(call, {
-    cols: marked("c"),
-    from: marked("f"),
-    where: marked("w"),
-    and: predicate("and", "true"),
-    or: predicate("or", "false"),
-    transaction,
-    schema,
-  }) as unknown as Xql<S>;
+  call.schema = schema;
+  return call as Xql<S>;
 }
