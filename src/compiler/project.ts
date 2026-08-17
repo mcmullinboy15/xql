@@ -3,7 +3,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import type { CompiledQueryArtifact } from "../runtime/compiled.ts";
 import { compileQuery } from "./compile-query.ts";
-import { emitGeneratedModule } from "./emit.ts";
+import { emitGeneratedModule, emitRuntimeManifestModule } from "./emit.ts";
 import { extractQueriesFromSource } from "./extract.ts";
 import { loadPostgresParser } from "./parser.ts";
 import {
@@ -14,14 +14,18 @@ import {
   type PostgresParser,
 } from "./types.ts";
 
-const COMPILER_CACHE_VERSION = 1 as const;
+const COMPILER_CACHE_VERSION = 2 as const;
 
 interface ArtifactCache {
   readonly version: typeof COMPILER_CACHE_VERSION;
   readonly catalogHash: string;
   readonly moduleName: string;
   readonly outFileKey: string;
-  readonly generatedStamp: string;
+  readonly runtimeFileKey: string;
+  readonly generatedArtifactHash?: string;
+  readonly generatedStamp?: string;
+  readonly runtimeArtifactHash?: string;
+  readonly runtimeStamp?: string;
   readonly artifacts: readonly CompiledQueryArtifact[];
 }
 
@@ -42,13 +46,18 @@ interface ArtifactCacheState {
   readonly artifacts: Map<string, CompiledQueryArtifact>;
   readonly moduleName?: string;
   readonly outFileKey?: string;
+  readonly runtimeFileKey?: string;
+  readonly generatedArtifactHash?: string;
   readonly generatedStamp?: string;
+  readonly runtimeArtifactHash?: string;
+  readonly runtimeStamp?: string;
 }
 
 export interface CompileProjectOptions {
   readonly root: string;
   readonly catalog: CompilerCatalog;
   readonly outFile?: string;
+  readonly runtimeFile?: string;
   readonly moduleName?: string;
   readonly calleeNames?: readonly string[];
   readonly parser?: PostgresParser;
@@ -57,6 +66,13 @@ export interface CompileProjectOptions {
   /** Persistent artifact/extraction cache. Defaults to `.xql/cache.json`; set false to disable. */
   readonly cache?: boolean;
   readonly cacheFile?: string;
+  /**
+   * Refresh the global exact-literal TypeScript registry. Defaults to true.
+   * Development loops can set false: SQL is still parsed/analyzed and runtime
+   * metadata is refreshed, while the edited query temporarily uses XQL's
+   * single-query legacy inference until the next full compile.
+   */
+  readonly emitTypes?: boolean;
 }
 
 export interface CompileProjectStats {
@@ -67,12 +83,15 @@ export interface CompileProjectStats {
   readonly cacheHits: number;
   readonly cacheMisses: number;
   readonly compiledQueries: number;
+  readonly runtimeUpdated: boolean;
+  readonly typesUpdated: boolean;
 }
 
 export interface CompileProjectResult {
   readonly artifacts: readonly CompiledQueryArtifact[];
   readonly diagnostics: readonly CompilerDiagnostic[];
   readonly outFile: string;
+  readonly runtimeFile: string;
   readonly cacheFile?: string;
   readonly stats: CompileProjectStats;
 }
@@ -88,6 +107,16 @@ async function walk(dir: string, out: string[]): Promise<void> {
 
 function catalogHash(catalog: CompilerCatalog): string {
   return createHash("sha256").update(JSON.stringify(catalog)).digest("hex");
+}
+
+function artifactsHash(
+  artifacts: readonly CompiledQueryArtifact[],
+  ...salt: readonly string[]
+): string {
+  const hash = createHash("sha256");
+  for (const part of salt) hash.update(part).update("\0");
+  for (const artifact of artifacts) hash.update(JSON.stringify(artifact)).update("\0");
+  return hash.digest("hex");
 }
 
 async function stamp(file: string): Promise<string> {
@@ -129,7 +158,15 @@ async function readArtifactCache(
       ),
       ...(typeof parsed.moduleName === "string" ? { moduleName: parsed.moduleName } : {}),
       ...(typeof parsed.outFileKey === "string" ? { outFileKey: parsed.outFileKey } : {}),
+      ...(typeof parsed.runtimeFileKey === "string" ? { runtimeFileKey: parsed.runtimeFileKey } : {}),
+      ...(typeof parsed.generatedArtifactHash === "string"
+        ? { generatedArtifactHash: parsed.generatedArtifactHash }
+        : {}),
       ...(typeof parsed.generatedStamp === "string" ? { generatedStamp: parsed.generatedStamp } : {}),
+      ...(typeof parsed.runtimeArtifactHash === "string"
+        ? { runtimeArtifactHash: parsed.runtimeArtifactHash }
+        : {}),
+      ...(typeof parsed.runtimeStamp === "string" ? { runtimeStamp: parsed.runtimeStamp } : {}),
     };
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
@@ -168,6 +205,13 @@ async function readExtractCache(
 async function writeFile(file: string, content: string): Promise<void> {
   await fs.mkdir(path.dirname(file), { recursive: true });
   await fs.writeFile(file, content, "utf8");
+}
+
+function runtimeImport(fromFile: string, runtimeFile: string): string {
+  let relative = path.relative(path.dirname(fromFile), runtimeFile).replaceAll(path.sep, "/");
+  relative = relative.replace(/\.(?:ts|tsx|mts|cts)$/, ".js");
+  if (!relative.startsWith(".")) relative = `./${relative}`;
+  return relative;
 }
 
 export async function compileProject(
@@ -225,7 +269,12 @@ export async function compileProject(
 
   const moduleName = options.moduleName ?? "xql";
   const outFile = path.resolve(root, options.outFile ?? ".xql/generated.ts");
+  const runtimeFile = options.runtimeFile === undefined
+    ? path.join(path.dirname(outFile), "runtime.ts")
+    : path.resolve(root, options.runtimeFile);
   const outFileKey = path.relative(root, outFile);
+  const runtimeFileKey = path.relative(root, runtimeFile);
+  const runtimeModuleImport = runtimeImport(outFile, runtimeFile);
   const hash = catalogHash(options.catalog);
   const artifactState = useCache
     ? await readArtifactCache(resolvedCacheFile, hash)
@@ -266,32 +315,95 @@ export async function compileProject(
     }
   }
 
-  const artifactSetUnchanged =
-    compiledQueries === 0 &&
-    cacheHits === locations.size &&
-    artifactState.artifacts.size === artifacts.length &&
+  const artifactSetChanged =
+    compiledQueries > 0 ||
+    artifactState.artifacts.size !== artifacts.length;
+  const configMatches =
     artifactState.moduleName === moduleName &&
-    artifactState.outFileKey === outFileKey;
-  const currentGeneratedStamp = artifactSetUnchanged ? await optionalStamp(outFile) : undefined;
+    artifactState.outFileKey === outFileKey &&
+    artifactState.runtimeFileKey === runtimeFileKey;
+
+  const runtimeArtifactHash = artifactsHash(artifacts, moduleName, "runtime");
+  const currentRuntimeStamp =
+    configMatches && artifactState.runtimeArtifactHash === runtimeArtifactHash
+      ? await optionalStamp(runtimeFile)
+      : undefined;
+  const canReuseRuntime =
+    currentRuntimeStamp !== undefined &&
+    currentRuntimeStamp === artifactState.runtimeStamp;
+
+  let runtimeStamp = currentRuntimeStamp;
+  let runtimeUpdated = false;
+  if (!canReuseRuntime) {
+    await writeFile(runtimeFile, emitRuntimeManifestModule(artifacts, moduleName));
+    runtimeStamp = await stamp(runtimeFile);
+    runtimeUpdated = true;
+  }
+
+  const generatedArtifactHash = artifactsHash(
+    artifacts,
+    moduleName,
+    outFileKey,
+    runtimeFileKey,
+    runtimeModuleImport,
+    "types",
+  );
+  const emitTypes = options.emitTypes !== false;
+  const currentGeneratedStamp =
+    configMatches && artifactState.generatedArtifactHash === generatedArtifactHash
+      ? await optionalStamp(outFile)
+      : undefined;
   const canReuseGenerated =
-    artifactSetUnchanged &&
     currentGeneratedStamp !== undefined &&
     currentGeneratedStamp === artifactState.generatedStamp;
 
   let generatedStamp = currentGeneratedStamp;
-  if (!canReuseGenerated) {
-    await writeFile(outFile, emitGeneratedModule(artifacts, moduleName));
+  let typesUpdated = false;
+  if (emitTypes && !canReuseGenerated) {
+    await writeFile(
+      outFile,
+      emitGeneratedModule(artifacts, moduleName, runtimeModuleImport),
+    );
     generatedStamp = await stamp(outFile);
+    typesUpdated = true;
   }
 
   if (useCache) {
-    if (!artifactSetUnchanged || !canReuseGenerated) {
+    const preserveGeneratedMetadata = !emitTypes && configMatches;
+    const nextGeneratedArtifactHash = emitTypes
+      ? generatedArtifactHash
+      : preserveGeneratedMetadata
+        ? artifactState.generatedArtifactHash
+        : undefined;
+    const nextGeneratedStamp = emitTypes
+      ? generatedStamp
+      : preserveGeneratedMetadata
+        ? artifactState.generatedStamp
+        : undefined;
+
+    const artifactCacheDirty =
+      artifactSetChanged ||
+      runtimeUpdated ||
+      typesUpdated ||
+      !configMatches ||
+      artifactState.runtimeArtifactHash !== runtimeArtifactHash ||
+      artifactState.runtimeStamp !== runtimeStamp ||
+      artifactState.generatedArtifactHash !== nextGeneratedArtifactHash ||
+      artifactState.generatedStamp !== nextGeneratedStamp;
+
+    if (artifactCacheDirty) {
       const cache: ArtifactCache = {
         version: COMPILER_CACHE_VERSION,
         catalogHash: hash,
         moduleName,
         outFileKey,
-        generatedStamp: generatedStamp!,
+        runtimeFileKey,
+        ...(nextGeneratedArtifactHash !== undefined
+          ? { generatedArtifactHash: nextGeneratedArtifactHash }
+          : {}),
+        ...(nextGeneratedStamp !== undefined ? { generatedStamp: nextGeneratedStamp } : {}),
+        runtimeArtifactHash,
+        runtimeStamp: runtimeStamp!,
         artifacts,
       };
       await writeFile(resolvedCacheFile, JSON.stringify(cache) + "\n");
@@ -310,6 +422,7 @@ export async function compileProject(
     artifacts,
     diagnostics,
     outFile,
+    runtimeFile,
     ...(useCache ? { cacheFile: resolvedCacheFile } : {}),
     stats: {
       filesScanned: files.length,
@@ -319,6 +432,8 @@ export async function compileProject(
       cacheHits,
       cacheMisses,
       compiledQueries,
+      runtimeUpdated,
+      typesUpdated,
     },
   };
 }
