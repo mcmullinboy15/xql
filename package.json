@@ -25,11 +25,13 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "node --test --experimental-strip-types test/runtime.test.ts test/pg.test.ts test/hardening.test.ts test/compiler.test.ts test/differential.test.ts",
+    "test": "node --test --experimental-strip-types test/runtime.test.ts test/pg.test.ts test/hardening.test.ts test/compiler.test.ts test/compiler-cache.test.ts test/differential.test.ts",
     "test:differential": "node --test --experimental-strip-types test/differential.test.ts",
     "check": "npm run typecheck && npm test",
     "bench:types": "node --experimental-strip-types benchmark/typecheck.ts",
     "bench:types:assert": "node --experimental-strip-types benchmark/assert-type-performance.ts",
+    "bench:compiler": "node --experimental-strip-types benchmark/compiler.ts",
+    "bench:compiler:assert": "node --experimental-strip-types benchmark/assert-compiler-performance.ts",
     "prepublishOnly": "npm run check && npm run build"
   },
   "keywords": [

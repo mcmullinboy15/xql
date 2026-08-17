@@ -50,3 +50,25 @@ jobs:
           --xql-entry ../../dist/index.d.ts
       - name: Enforce type-performance budgets
         run: npm run bench:types:assert -- --count ${{ matrix.count }}
+
+  compiler-performance:
+    name: compiler-performance (${{ matrix.count }} queries)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        count: [100, 1000, 5000, 10000, 25000]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Install real PostgreSQL parser for compiler benchmark
+        run: npm install --no-save --package-lock=false libpg-query@17.7.4
+      - name: Benchmark XQL compiler
+        run: npm run bench:compiler -- --counts ${{ matrix.count }}
+      - name: Enforce compiler-performance budgets
+        run: npm run bench:compiler:assert -- --count ${{ matrix.count }}
