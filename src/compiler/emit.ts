@@ -73,7 +73,7 @@ export function emitRuntimeManifestModule(
   const payload = gzipSync(JSON.stringify(manifest)).toString("base64");
 
   return [
-    `import type ${JSON.stringify(typesImport)};`,
+    `import type {} from ${JSON.stringify(typesImport)};`,
     `import { gunzipSync } from "node:zlib";`,
     `import type { CompiledManifest } from ${JSON.stringify(moduleName)};`,
     ``,
