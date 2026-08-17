@@ -379,8 +379,10 @@ design costs exactly one pair of parentheses, and buys everything else.
   else — every query needs a table expression.
 - Subqueries in `FROM` are not parsed. They are rejected, but the message talks
   about an unknown alias rather than naming the real cause.
-- Subqueries in `WHERE` do work — `where id in (select ...)` is fine, because the
-  tail is reference-checked rather than structurally parsed.
+- Subqueries elsewhere are accepted but not checked: their own scope is skipped
+  rather than resolved, so a typo inside one is not caught.
+- After `union` / `intersect` / `except`, checking stops. The row type comes from
+  the first branch, as Postgres does, but later branches are unvalidated.
 - `UPDATE ... FROM` extra tables are not added to the scope.
 
 ## Type-level performance

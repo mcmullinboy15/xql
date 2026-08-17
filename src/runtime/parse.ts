@@ -504,6 +504,19 @@ function checkRefs(
 
   for (let i = 0; i < toks.length; i++) {
     const lower = toks[i]!.toLowerCase();
+    // A set operator starts a new query with its own scope.
+    if (lower === "union" || lower === "intersect" || lower === "except") return;
+    // A subquery brings its own FROM, so its refs cannot be resolved here.
+    if (toks[i] === "(" && toks[i + 1]?.toLowerCase() === "select") {
+      let depth = 1;
+      i++;
+      while (i < toks.length && depth > 0) {
+        i++;
+        if (toks[i] === "(") depth++;
+        else if (toks[i] === ")") depth--;
+      }
+      continue;
+    }
     if (lower === "where" || lower === "having") {
       allowOutNames = false;
       continue;

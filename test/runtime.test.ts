@@ -500,3 +500,24 @@ test("references inside DISTINCT ON are checked", () => {
     assert.throws(() => (xql as any)(q), (e: Error) => e instanceof XqlError && re.test(e.message), q);
   }
 });
+
+test("subquery and set-operator scopes are not resolved against the outer query", () => {
+  const { xql } = mk();
+  for (const q of [
+    `select p.id from product p where p.id in (select v.product_id from variant v)`,
+    `select p.id from product p where exists (select 1 from variant v where v.product_id = p.id)`,
+    `select p.id from product p where p.id in (select v.product_id from variant v where v.sku in (select s.name from supplier s))`,
+    `select p.id from product p union select v.id from variant v`,
+    `select p.id from product p union all select v.product_id from variant v`,
+  ]) {
+    assert.doesNotThrow(() => (xql as any)(q), q);
+  }
+  // the outer scope is still checked, including after a skipped subquery
+  for (const q of [
+    `select p.id from product p where p.nope = 1`,
+    `select p.id from product p where p.id in (select v.id from variant v) and p.nope = 1`,
+  ]) {
+    assert.throws(() => (xql as any)(q), (e: Error) =>
+      e instanceof XqlError && /^unknown column "nope"/.test(e.message), q);
+  }
+});
