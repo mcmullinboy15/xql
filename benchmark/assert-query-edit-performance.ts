@@ -7,6 +7,8 @@ interface Result {
   editCompileMs: number;
   editCompiledQueries: number;
   editFilesRead: number;
+  editRuntimeUpdated: boolean;
+  editTypesUpdated: boolean;
   editTypecheck: {
     wallMs: number;
     memoryMb?: number;
@@ -38,10 +40,12 @@ const rows = [
   ["TypeScript peak memory", `${result.editTypecheck.memoryMb ?? "?"} MB`, `<= ${memoryBudget} MB`],
   ["queries recompiled", `${result.editCompiledQueries}`, "1"],
   ["source files reread", `${result.editFilesRead}`, "1"],
+  ["runtime manifest updated", `${result.editRuntimeUpdated}`, "true"],
+  ["global type registry updated", `${result.editTypesUpdated}`, "false"],
 ];
 
 const lines = [
-  `### XQL end-to-end query edit — ${count.toLocaleString()} queries`,
+  `### XQL end-to-end development query edit — ${count.toLocaleString()} queries`,
   "",
   "| metric | result | budget |",
   "|---|---:|---:|",
@@ -61,10 +65,14 @@ if (result.editCompiledQueries !== 1)
   failures.push(`query edit recompiled ${result.editCompiledQueries} queries; expected exactly 1`);
 if (result.editFilesRead !== 1)
   failures.push(`query edit reread ${result.editFilesRead} source files; expected exactly 1`);
+if (!result.editRuntimeUpdated)
+  failures.push("query edit did not refresh runtime compiler metadata");
+if (result.editTypesUpdated)
+  failures.push("development query edit rewrote the global type registry");
 
 lines.push("", failures.length === 0
-  ? "✅ End-to-end query-edit budget passed."
-  : `❌ ${failures.length} end-to-end query-edit budget(s) failed.`);
+  ? "✅ End-to-end development query-edit budget passed."
+  : `❌ ${failures.length} end-to-end development query-edit budget(s) failed.`);
 
 const summary = lines.join("\n") + "\n";
 process.stdout.write(summary);
