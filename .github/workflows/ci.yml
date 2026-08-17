@@ -72,3 +72,23 @@ jobs:
         run: npm run bench:compiler -- --counts ${{ matrix.count }}
       - name: Enforce compiler-performance budgets
         run: npm run bench:compiler:assert -- --count ${{ matrix.count }}
+
+  query-edit-performance:
+    name: query-edit-performance (25,000 queries)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Install real PostgreSQL parser
+        run: npm install --no-save --package-lock=false libpg-query@17.7.4
+      - name: Build published type surface
+        run: npm run build
+      - name: Benchmark one real SQL edit end to end
+        run: npm run bench:query-edit -- --counts 25000
+      - name: Enforce query-edit latency budget
+        run: npm run bench:query-edit:assert -- --count 25000
