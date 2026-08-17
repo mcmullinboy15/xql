@@ -77,12 +77,16 @@ export interface XqlOptions {
   readonly onQuery?: (event: QueryEvent) => void;
 }
 
-type GeneratedInfo<Q extends keyof GeneratedQueryRegistry> =
-  GeneratedQueryRegistry[Q] & GeneratedQueryInfo;
+type GeneratedInfo<Q extends string> =
+  Q extends keyof GeneratedQueryRegistry
+    ? GeneratedQueryRegistry[Q]
+    : never;
 
 type ParamsFor<S extends SchemaDef, Q extends string> =
   Q extends keyof GeneratedQueryRegistry
-    ? GeneratedInfo<Q>["params"]
+    ? GeneratedInfo<Q> extends GeneratedQueryInfo<unknown, infer P>
+      ? P
+      : never
     : StrictParamsOfQuery<S, Q>;
 
 type ParamsArg<S extends SchemaDef, Q extends string> =
@@ -94,7 +98,9 @@ type ParamsArg<S extends SchemaDef, Q extends string> =
 
 type Result<S extends SchemaDef, Q extends string> =
   Q extends keyof GeneratedQueryRegistry
-    ? Query<GeneratedInfo<Q>["row"]>
+    ? GeneratedInfo<Q> extends GeneratedQueryInfo<infer R, unknown>
+      ? Query<R>
+      : never
     : ValidateJoinRefs<S, Q> extends infer J
       ? J extends XqlTypeError<string>
         ? J
