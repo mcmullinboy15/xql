@@ -1,14 +1,52 @@
 {
   "name": "xql",
   "version": "0.1.0",
-  "description": "SQL template strings that type and validate their own output",
-  "main": "index.js",
-  "scripts": {
-    "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "node --test --experimental-strip-types test/runtime.test.ts test/pg.test.ts",
-    "check": "npm run typecheck && npm test"
+  "description": "Write PostgreSQL with generated TypeScript types and runtime validation",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./compiler": {
+      "types": "./dist/compiler/index.d.ts",
+      "import": "./dist/compiler/index.js"
+    }
   },
-  "keywords": [],
+  "bin": {
+    "xql": "./dist/compiler/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "docs"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "npm run clean && tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "node --test --experimental-strip-types test/runtime.test.ts test/pg.test.ts test/compiler.test.ts test/operations.test.ts",
+    "test:differential": "node --experimental-strip-types scripts/differential.ts",
+    "check": "npm run typecheck && npm test",
+    "benchmark:types": "node --experimental-strip-types scripts/benchmark-typecheck.ts",
+    "benchmark:runtime": "node --experimental-strip-types scripts/benchmark-runtime.ts",
+    "prepublishOnly": "npm run check && npm run build"
+  },
+  "keywords": [
+    "postgres",
+    "postgresql",
+    "sql",
+    "typescript",
+    "zod",
+    "type-safe"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mcmullinboy15/xql.git"
+  },
   "author": "",
   "license": "ISC",
   "dependencies": {
@@ -18,6 +56,5 @@
   },
   "devDependencies": {
     "@types/node": "^26.2.0"
-  },
-  "type": "module"
+  }
 }
