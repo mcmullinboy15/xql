@@ -30,9 +30,12 @@ interface QueryEditResult {
   editCompiledQueries: number;
   editCacheHits: number;
   editFilesRead: number;
+  editRuntimeUpdated: boolean;
+  editTypesUpdated: boolean;
   editTypecheck: TypeDiagnostics;
   combinedEditMs: number;
   generatedBytes: number;
+  runtimeBytes: number;
 }
 
 function option(name: string): string | undefined {
@@ -146,8 +149,9 @@ async function writeFixture(root: string, count: number): Promise<string[]> {
   await fs.writeFile(
     path.join(root, "fixture.ts"),
     `import { createXql, defineSchema, t } from "xql";\n` +
+    `import { manifest } from "./.xql/generated.js";\n` +
     `const schema = defineSchema({ product: { id: t.int8(), title: t.text() } });\n` +
-    `export const xql = createXql(schema, { query: async () => [] });\n`,
+    `export const xql = createXql(schema, { query: async () => [] }, { manifest });\n`,
     "utf8",
   );
 
@@ -198,11 +202,17 @@ async function runOne(count: number): Promise<QueryEditResult> {
   const editFile = queryFiles[Math.floor(editIndex / CHUNK_SIZE)]!;
   await editOneQuery(editFile, editIndex);
 
+  // Development mode: the compiler still proves and caches the changed SQL and
+  // refreshes runtime metadata immediately, but defers the global exact-literal
+  // registry refresh. That prevents 24,999 unrelated generated calls from being
+  // invalidated. The edited query temporarily takes the single-query legacy type
+  // path until the next full `xql compile` (which CI/build always performs).
   const editCompileStarted = performance.now();
   const editCompile = await compileProject({
     root,
     catalog,
     compiledOnly: true,
+    emitTypes: false,
   });
   const editCompileMs = performance.now() - editCompileStarted;
 
@@ -218,9 +228,12 @@ async function runOne(count: number): Promise<QueryEditResult> {
     editCompiledQueries: editCompile.stats.compiledQueries,
     editCacheHits: editCompile.stats.cacheHits,
     editFilesRead: editCompile.stats.filesRead,
+    editRuntimeUpdated: editCompile.stats.runtimeUpdated,
+    editTypesUpdated: editCompile.stats.typesUpdated,
     editTypecheck,
     combinedEditMs: editCompileMs + editTypecheck.wallMs,
     generatedBytes: (await fs.stat(path.join(root, ".xql/generated.ts"))).size,
+    runtimeBytes: (await fs.stat(path.join(root, ".xql/runtime.ts"))).size,
   };
 }
 
@@ -260,16 +273,19 @@ async function main(): Promise<void> {
     editCompiledQueries: result.editCompiledQueries,
     editCacheHits: result.editCacheHits,
     editFilesRead: result.editFilesRead,
+    editRuntimeUpdated: result.editRuntimeUpdated,
+    editTypesUpdated: result.editTypesUpdated,
     editTypecheck: compactType(result.editTypecheck),
     combinedEditMs: Math.round(result.combinedEditMs),
     generatedBytes: result.generatedBytes,
+    runtimeBytes: result.runtimeBytes,
   }));
 
   const out = path.join(benchRoot, "query-edit-results.json");
   await fs.writeFile(out, JSON.stringify(serializable, null, 2) + "\n", "utf8");
 
   console.log("\nEnd-to-end query edit summary");
-  console.log("queries\tcompile(ms)\ttsc(ms)\ttotal(ms)\trecompiled\tfiles-read\tgenerated(KB)");
+  console.log("queries\tcompile(ms)\ttsc(ms)\ttotal(ms)\trecompiled\tfiles-read\truntime-updated\ttypes-updated");
   for (const result of results) {
     console.log([
       result.count,
@@ -278,7 +294,8 @@ async function main(): Promise<void> {
       Math.round(result.combinedEditMs),
       result.editCompiledQueries,
       result.editFilesRead,
-      Math.round(result.generatedBytes / 1024),
+      result.editRuntimeUpdated,
+      result.editTypesUpdated,
     ].join("\t"));
   }
   console.log(`\nFull diagnostics: ${out}`);
