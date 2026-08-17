@@ -1,6 +1,7 @@
 import { z } from "zod";
 import {
   castZod,
+  fnZod,
   type Codec,
   type Column,
   type SchemaDef,
@@ -100,12 +101,23 @@ export function splitTopLevel(s: string): string[] {
 // ---------------------------------------------------------------------------
 
 export function parseFrom(clause: string): Entry[] {
+  if (clause.trim() === "") return [];
   const toks = words(clause.replace(/,/g, " , "));
   let i = 0;
 
   const readRef = (): { table: string; alias: string } => {
     const table = toks[i++];
     if (table === undefined) throw new XqlError("empty FROM clause");
+    if (table.startsWith("(") || table.toLowerCase() === "lateral")
+      throw new XqlError(
+        "a subquery in FROM is not supported — lift it into a WITH clause, which xql does resolve",
+      );
+    // The paren may be attached (`unnest(:ids)`) or separate (`unnest ( :ids )`),
+    // depending on whether the clause has been through a token rejoin.
+    if (table.includes("(") || toks[i] === "(")
+      throw new XqlError(
+        `a table function in FROM is not supported ("${table.replace(/\(.*$/, "")}") — for a list parameter use \`= any (:ids::type[])\` instead`,
+      );
     const next = toks[i];
     if (next !== undefined && next.toLowerCase() === "as") {
       i++;
@@ -204,7 +216,12 @@ export function resolveExpr(
 ): Codec<unknown> {
   const expr = raw.trim();
 
-  const castAt = expr.lastIndexOf("::");
+  // A `::` only ends the expression when what follows is shaped like a type
+  // name. Otherwise it belongs to a nested expression, as in
+  // `(select count(*)::int8 from t)`, where the cast is the subquery's.
+  const castAt = isTypeNameShaped(expr.slice(expr.lastIndexOf("::") + 2))
+    ? expr.lastIndexOf("::")
+    : -1;
   if (castAt !== -1) {
     const ty = expr.slice(castAt + 2).trim().toLowerCase();
     const isArray = ty.endsWith("[]");
@@ -233,7 +250,9 @@ export function resolveExpr(
   if (matches.length === 1) return columnZod(schema, matches[0]!, expr);
   if (matches.length === 0)
     throw new XqlError(
-      `unknown column "${expr}" — not on any table in scope (${aliasList(entries)})`,
+      entries.length === 0
+        ? `unknown column "${expr}" — the query has no FROM clause`
+        : `unknown column "${expr}" — not on any table in scope (${aliasList(entries)})`,
     );
   throw new XqlError(
     `ambiguous column "${expr}" — qualify it, it exists on more than one table in scope (${aliasList(entries)})`,
@@ -251,6 +270,8 @@ function resolveCall(
   const fn = expr.slice(0, open).trim().toLowerCase();
   const args = expr.slice(open + 1, close);
 
+  const known = fnZod[fn];
+  if (known !== undefined) return known;
   if (fn === "count") return castZod.int8!;
   if (fn === "sum" || fn === "avg" || fn === "min" || fn === "max") {
     try {
@@ -259,7 +280,7 @@ function resolveCall(
       throw new XqlError(inferHint(expr, "numeric"));
     }
   }
-  if (fn === "coalesce") {
+  if (fn === "coalesce" || fn === "nullif" || fn === "greatest" || fn === "least") {
     const first = splitTopLevel(args)[0];
     if (first === undefined) throw new XqlError(inferHint(expr, "numeric"));
     try {
@@ -313,6 +334,8 @@ export function parseSelect(
     if (item === "") continue;
 
     if (item === "*") {
+      if (entries.length === 0)
+        throw new XqlError("select * requires a FROM clause");
       for (const e of entries) out.push(...tableColumns(schema, e));
       continue;
     }
@@ -344,6 +367,13 @@ export function parseSelect(
 // Clause splitting + params
 // ---------------------------------------------------------------------------
 
+/** Blanks string-literal contents while preserving length and whitespace. */
+function maskLiterals(sql: string): string {
+  return sql.replace(/'[^']*'/g, (lit) =>
+    lit.replace(/[^\s']/g, "x"),
+  );
+}
+
 interface Clauses {
   cols: string;
   from: string;
@@ -352,14 +382,43 @@ interface Clauses {
 
 function splitClauses(query: string): Clauses {
   const toks = words(query);
+  // Keyword and paren matching runs over a copy with string literals blanked,
+  // so a parenthesis or keyword inside a literal cannot move the clause
+  // boundaries. Blanking preserves length and whitespace, so the two token
+  // lists stay index-aligned and the returned clauses come from the original.
+  const maskedToks = words(maskLiterals(query));
+
+  /**
+   * Only matches at paren depth zero. A subquery has its own FROM, and matching
+   * it would slice the clauses at the wrong place — `select exists (select 1
+   * from x) as y` would take `x` as the outer table.
+   */
   const at = (kw: (t: string) => boolean, start: number) => {
-    for (let i = start; i < toks.length; i++) if (kw(toks[i]!.toLowerCase())) return i;
+    let depth = 0;
+    for (let i = 0; i < maskedToks.length; i++) {
+      const tok = maskedToks[i]!;
+      if (i >= start && depth === 0 && kw(tok.toLowerCase())) return i;
+      for (const ch of tok) {
+        if (ch === "(") depth++;
+        else if (ch === ")") depth--;
+      }
+    }
     return -1;
   };
   const sel = at((t) => t === "select", 0);
   if (sel === -1) throw new XqlError("query must contain a SELECT clause");
   const frm = at((t) => t === "from", sel + 1);
-  if (frm === -1) throw new XqlError("query must contain a FROM clause");
+  // A FROM clause is optional: `select (select …) as a, exists (…) as b` is a
+  // whole query whose columns are all self-typing.
+  if (frm === -1) {
+    const tailless = at((t) => TAIL_KW.has(t), sel + 1);
+    const stop = tailless === -1 ? toks.length : tailless;
+    return {
+      cols: toks.slice(sel + 1, stop).join(" "),
+      from: "",
+      tail: toks.slice(stop).join(" "),
+    };
+  }
   const tail = at((t) => TAIL_KW.has(t), frm + 1);
   const end = tail === -1 ? toks.length : tail;
   return {
@@ -483,6 +542,12 @@ const KEYWORDS = new Set([
 
 const stripCast = (t: string) => t.split("::")[0]!;
 
+/** `int8`, `text[]`, `double precision` — but not `int8 from product)`. */
+function isTypeNameShaped(s: string): boolean {
+  const t = s.trim();
+  return t !== "" && /^[A-Za-z_][A-Za-z0-9_]*( precision)?(\[\])?$/.test(t);
+}
+
 /**
  * Rejects references that cannot resolve. Qualified `alias.column` refs are
  * always checked; a bare identifier is checked only when it sits next to an
@@ -504,6 +569,19 @@ function checkRefs(
 
   for (let i = 0; i < toks.length; i++) {
     const lower = toks[i]!.toLowerCase();
+    // A set operator starts a new query with its own scope.
+    if (lower === "union" || lower === "intersect" || lower === "except") return;
+    // A subquery brings its own FROM, so its refs cannot be resolved here.
+    if (toks[i] === "(" && toks[i + 1]?.toLowerCase() === "select") {
+      let depth = 1;
+      i++;
+      while (i < toks.length && depth > 0) {
+        i++;
+        if (toks[i] === "(") depth++;
+        else if (toks[i] === ")") depth--;
+      }
+      continue;
+    }
     if (lower === "where" || lower === "having") {
       allowOutNames = false;
       continue;
@@ -702,7 +780,10 @@ const ORDER_STOP = new Set([
 ]);
 const OP_WORDS = new Set(["+", "-", "*", "/", "||", "%"]);
 
-function isLimitValue(v: string): boolean {
+function isLimitValue(raw: string): boolean {
+  // a LIMIT inside a subquery carries the rest of the expression on its value
+  // token, e.g. `limit 1)::int4`
+  const v = raw.replace(/[);].*$/, "");
   return /^[0-9]+$/.test(v) || v.toLowerCase() === "all" || /^:[A-Za-z_]/.test(v);
 }
 
@@ -716,6 +797,36 @@ function validDirection(rest: string[]): boolean {
     i++;
   }
   return i === l.length;
+}
+
+/**
+ * An ORDER BY item is `<expression> [asc|desc] [nulls first|last]`. Only the
+ * direction suffix is checkable — an expression may be a function call, a CASE,
+ * or arithmetic, none of which can be told from a malformed direction by shape
+ * alone. So the suffix is peeled off and validated, and the remainder is only
+ * questioned when it looks like a bare column followed by a stray word.
+ */
+function orderItemProblem(item: string): string | null {
+  const bad = `invalid ORDER BY direction in "${item}" — use asc or desc, optionally followed by nulls first/last`;
+  const head = words(item.replace(/;+$/, ""));
+  if (head.length === 0) return null;
+
+  const suffix: string[] = [];
+  while (head.length > 0 && DIR_WORDS.has(head[head.length - 1]!.toLowerCase()))
+    suffix.unshift(head.pop()!);
+
+  if (head.length === 0) return bad;
+  if (!validDirection(suffix)) return bad;
+  if (head.length === 1) return null;
+  // A direction word left inside the expression means a malformed suffix,
+  // such as `nulls sideways`.
+  if (head.slice(1).some((t) => DIR_WORDS.has(t.toLowerCase()))) return bad;
+  // `id ascending` is a typo; anything with parens, quotes or operators is an
+  // expression and is left alone.
+  const simple = (t: string) => !/[()'",+\-*/]/.test(t);
+  if (head.length === 2 && simple(head[0]!) && /^[A-Za-z_][A-Za-z0-9_]*$/.test(head[1]!))
+    return bad;
+  return null;
 }
 
 /** LIMIT/OFFSET take a count; ORDER BY items take asc/desc [nulls first|last]. */
@@ -739,14 +850,8 @@ function checkTailKeywords(query: string): void {
       while (j < toks.length && !ORDER_STOP.has(toks[j]!.toLowerCase()))
         run.push(toks[j++]!);
       for (const raw of splitTopLevel(run.join(" "))) {
-        const item = raw.trim();
-        const rest = words(item).slice(1);
-        if (rest.length === 0) continue;
-        if (rest.some((t) => OP_WORDS.has(t))) continue;
-        if (!validDirection(rest))
-          throw new XqlError(
-            `invalid ORDER BY direction in "${item}" — use asc or desc, optionally followed by nulls first/last`,
-          );
+        const problem = orderItemProblem(raw.trim());
+        if (problem !== null) throw new XqlError(problem);
       }
     }
   }
@@ -858,6 +963,29 @@ function prepareWith(schema: SchemaDef, query: string): Prepared {
   return { ...main, text: stripped.replace(/\s+/g, " ").trim() };
 }
 
+/**
+ * Splits a leading `distinct` / `distinct on (...)` off a select list. The ON
+ * expressions are still column references, so they are returned for checking
+ * rather than discarded.
+ */
+function splitDistinct(cols: string): { on: string; rest: string } {
+  const plain = words(cols);
+  const first = plain[0]?.toLowerCase();
+  if (first !== "distinct" && first !== "all") return { on: "", rest: cols };
+  const toks = wtokens(cols);
+  let i = 1;
+  let on = "";
+  if (toks[i]?.toLowerCase() === "on") {
+    i++;
+    if (toks[i] === "(") {
+      const group = parenGroup(toks, i);
+      on = group.items.join(" ");
+      i = group.next;
+    }
+  }
+  return { on, rest: toks.slice(i).join(" ") };
+}
+
 export function prepare(schema: SchemaDef, query: string): Prepared {
   if (words(stripMarkers(query))[0]?.toLowerCase() === "with")
     return prepareWith(schema, query);
@@ -868,7 +996,9 @@ export function prepare(schema: SchemaDef, query: string): Prepared {
   const clauses = splitClauses(query);
   checkRoles(clauses);
   const entries = parseFrom(stripMarkers(clauses.from));
-  const columns = parseSelect(schema, entries, stripMarkers(clauses.cols));
+  const distinct = splitDistinct(stripMarkers(clauses.cols));
+  const columns = parseSelect(schema, entries, distinct.rest);
+  if (distinct.on !== "") checkRefs(schema, entries, distinct.on);
   const tail = stripMarkers(clauses.tail);
   checkRefs(schema, entries, tail, new Set(columns.map((c) => c.name)));
   checkOrderColumns(schema, entries, columns, stripMarkers(query));

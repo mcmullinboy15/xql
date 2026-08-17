@@ -298,7 +298,10 @@ xql(`select array_agg(a.label)::text[] as labels from asset a`);
 //   ^? { labels: string[] }[]
 ```
 
-`bytes` and `bytea` are the same type; the first is CockroachDB's spelling.
+CockroachDB and Postgres spell several types differently and both are accepted:
+`string`/`text`, `bytes`/`bytea`, `int2`/`smallint`, `float4`/`real`. In a
+CockroachDB codebase `::string` is the single most common cast, so it matters
+that it resolves rather than erroring.
 
 `LIMIT` / `OFFSET` must take a count — a non-negative integer, `ALL`, or a
 parameter (typed as `number | bigint`, not an arbitrary value). `ORDER BY`
@@ -313,8 +316,10 @@ xql(`select id from product order by id ascending`);
 //  ^? XqlError<'invalid ORDER BY direction in "id ascending" — use asc or desc, ...'>
 ```
 
-An `ORDER BY` item containing an operator (`order by price + 1 desc`) is treated
-as an expression and left alone.
+An `ORDER BY` item may be an expression — a function call, a `CASE`, arithmetic —
+and only its trailing direction is checked, since an expression cannot be told
+from a malformed direction by shape alone. `order by id ascending` is still an
+error; `order by coalesce(a, b) desc` is not.
 
 `ORDER BY` columns are resolved the way Postgres resolves them — an ordinal, then
 one of the query's own output names, then an unambiguous column from the FROM
@@ -338,11 +343,21 @@ a compile error that quotes the reason.
 
 ## Expressions
 
+- `distinct`, `distinct on (...)` and `all`, which do not change the row type.
+  The `distinct on` expressions are still checked as column references.
 - Columns, qualified (`p.id`) or bare (resolved across the scope, ambiguity rejected).
 - `*` and `p.*`, expanded in declaration order with join nullability applied.
 - Aliases: `expr as name`, or `p.id name`.
 - Aggregates with derivable types: `count` → `bigint`, `sum`/`avg`/`min`/`max` →
-  the argument's type, nullable, `coalesce` → the first argument, non-null.
+  the argument's type, nullable, and `coalesce`/`nullif`/`greatest`/`least` →
+  the first argument.
+- Functions whose result SQL fixes: `exists` → `boolean`, `lower`/`encode`/
+  `to_char` → `string`, `length` → `number`, `now` → `Date`, `row_number` →
+  `bigint`, and similar. Anything whose type depends on its arguments in a way
+  the call does not show — `jsonb_agg`, `array_agg` — still needs a cast.
+- A `FROM` clause is optional when every column types itself — `select (select
+  count(*) from t)::int8 as n, exists (...) as any` is a whole query. A column
+  reference with no scope reports that there is no FROM clause.
 - Anything else needs an explicit cast, which doubles as the escape hatch and is
   real SQL:
 
@@ -373,12 +388,16 @@ design costs exactly one pair of parentheses, and buys everything else.
   it cannot be resolved before that CTE exists.
 - Column alias lists (`with t (a, b) as ...`) are rejected; name the columns in
   the CTE's own SELECT instead.
-- `SELECT` without a `FROM` clause is not supported, in a CTE body or anywhere
-  else — every query needs a table expression.
-- Subqueries in `FROM` are not parsed. They are rejected, but the message talks
-  about an unknown alias rather than naming the real cause.
-- Subqueries in `WHERE` do work — `where id in (select ...)` is fine, because the
-  tail is reference-checked rather than structurally parsed.
+- Clause splitting is parenthesis-aware, so a subquery's own `FROM` is not
+  mistaken for the outer one and a keyword inside a string literal cannot move a
+  clause boundary.
+- Subqueries and table functions in `FROM` are not parsed. They are rejected by
+  name, and the message points at the alternative — a `WITH` clause, or
+  `= any (:ids::type[])` for a list parameter.
+- Subqueries elsewhere are accepted but not checked: their own scope is skipped
+  rather than resolved, so a typo inside one is not caught.
+- After `union` / `intersect` / `except`, checking stops. The row type comes from
+  the first branch, as Postgres does, but later branches are unvalidated.
 - `UPDATE ... FROM` extra tables are not added to the scope.
 
 ## Type-level performance

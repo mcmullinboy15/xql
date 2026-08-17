@@ -55,14 +55,31 @@ interface KwSplit {
   kw: string;
 }
 
+type AddOpens<S extends string, D extends 1[]> = S extends `${string}(${infer R}`
+  ? AddOpens<R, [...D, 1]>
+  : D;
+
+type SubCloses<S extends string, D extends 1[]> = S extends `${string})${infer R}`
+  ? SubCloses<R, D extends [1, ...infer Rest extends 1[]] ? Rest : []>
+  : D;
+
+type AdjustDepth<D extends 1[], S extends string> = SubCloses<S, AddOpens<S, D>>;
+
+/**
+ * Finds a clause keyword at paren depth zero. A subquery has its own FROM, and
+ * matching it would slice the clauses at the wrong place.
+ */
 type FindKw<
   T extends readonly string[],
   Kw extends string,
   Acc extends string[] = [],
+  Depth extends 1[] = [],
 > = T extends readonly [infer H extends string, ...infer R extends string[]]
-  ? Lowercase<H> extends Kw
-    ? { before: Acc; after: R; found: true; kw: H }
-    : FindKw<R, Kw, [...Acc, H]>
+  ? Depth extends []
+    ? Lowercase<H> extends Kw
+      ? { before: Acc; after: R; found: true; kw: H }
+      : FindKw<R, Kw, [...Acc, H], AdjustDepth<Depth, H>>
+    : FindKw<R, Kw, [...Acc, H], AdjustDepth<Depth, H>>
   : { before: Acc; after: []; found: false; kw: "" };
 
 type TailKw =
@@ -368,6 +385,21 @@ type ResolveBareRef<
  * Postgres allows output names in GROUP BY / ORDER BY but not WHERE / HAVING,
  * so the walk tracks which clause it is in.
  */
+type SkipBalanced<
+  T extends readonly string[],
+  Depth extends 1[] = [1],
+> = T extends readonly [infer H extends string, ...infer R extends string[]]
+  ? H extends "("
+    ? SkipBalanced<R, [...Depth, 1]>
+    : H extends ")"
+      ? Depth extends [1, ...infer Rest extends 1[]]
+        ? Rest extends []
+          ? R
+          : SkipBalanced<R, Rest>
+        : R
+      : SkipBalanced<R, Depth>
+  : [];
+
 type CheckTailRefs<
   S extends SchemaDef,
   E extends readonly FromEntry[],
@@ -376,7 +408,13 @@ type CheckTailRefs<
   Prev extends string = "",
   AllowOut extends boolean = false,
 > = Toks extends readonly [infer H extends string, ...infer R extends string[]]
-  ? Lowercase<H> extends "where" | "having"
+  ? Lowercase<H> extends "union" | "intersect" | "except"
+    ? null
+    : H extends "("
+      ? Lowercase<NextTok<R>> extends "select"
+        ? CheckTailRefs<S, E, Out, SkipBalanced<R>, H, AllowOut>
+        : CheckTailRefs<S, E, Out, R, H, AllowOut>
+      : Lowercase<H> extends "where" | "having"
     ? CheckTailRefs<S, E, Out, R, H, false>
     : Lowercase<H> extends "group" | "order"
       ? CheckTailRefs<S, E, Out, R, H, true>
@@ -426,6 +464,16 @@ type CheckBare<
       : never
     : CheckTailRefs<S, E, Out, R, H, AllowOut>;
 
+/** The first failing check in a list, or null when all pass. */
+type FirstError<T extends readonly unknown[]> = T extends readonly [
+  infer H,
+  ...infer R,
+]
+  ? H extends XqlError<string>
+    ? H
+    : FirstError<R>
+  : null;
+
 type Build<
   S extends SchemaDef,
   Q extends string,
@@ -435,37 +483,47 @@ type Build<
 > = CheckRoles<ColsRaw, FromRaw, WhereRaw> extends infer RoleErr
   ? RoleErr extends XqlError<string>
     ? RoleErr
-    : ParseFrom<StripMarkers<FromRaw>> extends infer E extends
-          readonly FromEntry[]
-      ? ParseSelect<S, E, StripMarkers<ColsRaw>> extends infer Row
+    : ParseFrom<StripMarkers<FromRaw>> extends infer E0
+      ? [E0] extends [XqlError<string>]
+        ? E0
+        : E0 extends readonly FromEntry[]
+      ? ParseSelect<S, E0, StripDistinct<StripMarkers<ColsRaw>>> extends infer Row
         ? [Row] extends [XqlError<string>]
           ? Row
-          : CheckTailRefs<
-                S,
-                E,
-                Extract<keyof Row, string>,
-                TailTokens<StripMarkers<WhereRaw>>
-              > extends infer RefErr
-            ? RefErr extends XqlError<string>
-              ? RefErr
-              : CheckOrderColumns<
+          : FirstError<
+                [
+                  CheckTailRefs<
                     S,
-                    E,
+                    E0,
+                    never,
+                    TailTokens<StripMarkers<DistinctOnGroup<ColsRaw>>>
+                  >,
+                  CheckTailRefs<
+                    S,
+                    E0,
+                    Extract<keyof Row, string>,
+                    TailTokens<StripMarkers<WhereRaw>>
+                  >,
+                  CheckOrderColumns<
+                    S,
+                    E0,
                     Extract<keyof Row, string>,
                     OrderByItems<Words<MaskStrings<StripMarkers<Q>>>>
-                  > extends infer OErr
-                ? OErr extends XqlError<string>
-                  ? OErr
-                  : {
-                      row: Row;
-                      params: {
-                        [N in Distinct<
-                          ParamNames<StripMarkers<Q>>
-                        >[number]]: ParamType<S, E, StripMarkers<Q>, N>;
-                      };
-                    }
-                : never
+                  >,
+                ]
+              > extends infer Err
+            ? Err extends XqlError<string>
+              ? Err
+              : {
+                  row: Row;
+                  params: {
+                    [N in Distinct<
+                      ParamNames<StripMarkers<Q>>
+                    >[number]]: ParamType<S, E0, StripMarkers<Q>, N>;
+                  };
+                }
             : never
+        : never
         : never
       : never
   : never;
@@ -566,7 +624,14 @@ type IsDigits<S extends string> = S extends `${infer C}${infer R}`
     : false
   : false;
 
-type IsLimitValue<V extends string> = IsDigits<V> extends true
+/** A LIMIT inside a subquery carries the rest of the expression, e.g. `1)::int4`. */
+type LimitValue<S extends string> = S extends `${infer A})${string}`
+  ? A
+  : S extends `${infer A};${string}`
+    ? A
+    : S;
+
+type IsLimitValue<Raw extends string, V extends string = LimitValue<Raw>> = IsDigits<V> extends true
   ? true
   : Lowercase<V> extends "all"
     ? true
@@ -602,16 +667,77 @@ type HasOpWord<W extends readonly string[]> = W extends readonly [
     : HasOpWord<R>
   : false;
 
+type StripSemis<S extends string> = S extends `${infer R};`
+  ? StripSemis<R>
+  : S;
+
+type PopDirs<
+  W extends readonly string[],
+  Suffix extends string[] = [],
+> = W extends readonly [...infer I extends string[], infer L extends string]
+  ? Lowercase<L> extends DirWord
+    ? PopDirs<I, [L, ...Suffix]>
+    : { head: W; suffix: Suffix }
+  : { head: []; suffix: Suffix };
+
+type HasDirWord<W extends readonly string[]> = W extends readonly [
+  infer H extends string,
+  ...infer R extends string[],
+]
+  ? Lowercase<H> extends DirWord
+    ? true
+    : HasDirWord<R>
+  : false;
+
+type IsSimpleTok<S extends string> = S extends `${string}${
+  | "("
+  | ")"
+  | "'"
+  | '"'
+  | ","
+  | "+"
+  | "-"
+  | "*"
+  | "/"}${string}`
+  ? false
+  : true;
+
+/**
+ * An ORDER BY item is `<expression> [asc|desc] [nulls first|last]`. Only the
+ * direction suffix is checkable — an expression may be a function call, a CASE,
+ * or arithmetic, none of which can be told from a malformed direction by shape
+ * alone. So the suffix is peeled off and validated, and the remainder is only
+ * questioned when it looks like a bare column followed by a stray word.
+ */
 type CheckOrderItem<Item extends string> =
-  Words<Item> extends readonly [string, ...infer Rest extends string[]]
-    ? Rest extends readonly []
-      ? null
-      : HasOpWord<Rest> extends true
-        ? null
-        : ValidDirection<Rest> extends true
+  PopDirs<Words<StripSemis<Item>>> extends infer P extends {
+    head: readonly string[];
+    suffix: readonly string[];
+  }
+    ? P["head"] extends readonly []
+      ? BadDirection<Item>
+      : ValidDirection<P["suffix"]> extends true
+        ? P["head"] extends readonly [string]
           ? null
-          : XqlError<`invalid ORDER BY direction in "${Item}" — use asc or desc, optionally followed by nulls first/last`>
+          : P["head"] extends readonly [string, ...infer R extends string[]]
+            ? HasDirWord<R> extends true
+              ? BadDirection<Item>
+              : P["head"] extends readonly [
+                    infer A extends string,
+                    infer B extends string,
+                  ]
+                ? IsSimpleTok<A> extends true
+                  ? IsPlainIdent<B> extends true
+                    ? BadDirection<Item>
+                    : null
+                  : null
+                : null
+            : null
+        : BadDirection<Item>
     : null;
+
+type BadDirection<Item extends string> =
+  XqlError<`invalid ORDER BY direction in "${Item}" — use asc or desc, optionally followed by nulls first/last`>;
 
 type CheckOrderItems<Items extends readonly string[]> =
   Items extends readonly [infer H extends string, ...infer R extends string[]]
@@ -729,6 +855,52 @@ type CheckOrderColumns<
       : CheckOrderColumns<S, E, RowKeys, R>
     : never
   : null;
+
+/**
+ * `distinct` and `distinct on (...)` sit between SELECT and the select list.
+ * They do not change the row type, so they are removed before resolving it —
+ * otherwise `distinct` reads as the first output column.
+ */
+type StripDistinctOn<T extends readonly string[]> = T extends readonly [
+  string,
+  ...infer R extends string[],
+]
+  ? R extends readonly [infer N extends string, ...infer R2 extends string[]]
+    ? Lowercase<N> extends "on"
+      ? ParenGroup<R2> extends { rest: infer Rest extends readonly string[] }
+        ? Join<Rest, " ">
+        : ""
+      : Join<R, " ">
+    : ""
+  : "";
+
+/** The expressions inside `distinct on (...)`, which are still column refs. */
+type ExtractOnGroup<T extends readonly string[]> = T extends readonly [
+  string,
+  ...infer R extends string[],
+]
+  ? R extends readonly [infer N extends string, ...infer R2 extends string[]]
+    ? Lowercase<N> extends "on"
+      ? ParenGroup<R2> extends { items: infer I extends readonly string[] }
+        ? Join<I, " ">
+        : ""
+      : ""
+    : ""
+  : "";
+
+type DistinctOnGroup<Cols extends string> =
+  Words<Cols> extends readonly [infer H extends string, ...string[]]
+    ? Lowercase<H> extends "distinct"
+      ? ExtractOnGroup<WTokens<Cols>>
+      : ""
+    : "";
+
+type StripDistinct<Cols extends string> =
+  Words<Cols> extends readonly [infer H extends string, ...string[]]
+    ? Lowercase<H> extends "distinct" | "all"
+      ? StripDistinctOn<WTokens<Cols>>
+      : Cols
+    : Cols;
 
 type StartsWithWith<Q extends string> =
   Words<Q> extends readonly [infer H extends string, ...string[]]
@@ -912,7 +1084,17 @@ type ParseSelectQuery<
       ? XqlError<"query must contain a SELECT clause">
       : FindKw<Sel["after"], "from"> extends infer Frm extends KwSplit
         ? Frm["found"] extends false
-          ? XqlError<"query must contain a FROM clause">
+          ? // A FROM clause is optional: `select (select …) as a` is a whole
+            // query whose columns are all self-typing.
+            FindKw<Sel["after"], TailKw> extends infer Bare extends KwSplit
+            ? Build<
+                S,
+                PQ,
+                Trim<Join<Bare["before"], " ">>,
+                "",
+                Trim<Join<[Bare["kw"], ...Bare["after"]], " ">>
+              >
+            : never
           : FindKw<Frm["after"], TailKw> extends infer Tail extends KwSplit
             ? Build<
                 S,

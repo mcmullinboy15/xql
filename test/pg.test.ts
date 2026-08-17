@@ -417,3 +417,12 @@ test("bytea round-trips and array parameters bind, against real Postgres", async
   assert.ok(rows[0]!.digest instanceof Uint8Array);
   assert.deepEqual(Array.from(rows[0]!.digest), [1, 2, 3]);
 });
+
+test("DISTINCT ON executes against real Postgres", async () => {
+  // two variants share product 1, so DISTINCT ON collapses them to one row
+  const rows = await xql(
+    `select distinct on (v.product_id) v.product_id, v.sku
+     from variant v order by v.product_id, v.id`,
+  );
+  assert.deepEqual(rows, [{ product_id: 1n, sku: "SHIRT-S" }]);
+});

@@ -1,4 +1,4 @@
-import type { CastTypes, ColType, SchemaDef } from "../schema.ts";
+import type { CastTypes, ColType, FnTypes, SchemaDef } from "../schema.ts";
 import type { FromEntry } from "./from.ts";
 import type {
   AfterLast,
@@ -88,7 +88,9 @@ type ResolveBare<
   ? M extends readonly [infer Only extends FromEntry]
     ? ColOf<S, Only, Col>
     : M extends readonly []
-      ? XqlError<`unknown column "${Col}" — not on any table in scope (${AliasList<E>})`>
+      ? E extends readonly []
+        ? XqlError<`unknown column "${Col}" — the query has no FROM clause`>
+        : XqlError<`unknown column "${Col}" — not on any table in scope (${AliasList<E>})`>
       : XqlError<`ambiguous column "${Col}" — qualify it, it exists on more than one table in scope (${AliasList<E>})`>
   : never;
 
@@ -96,6 +98,23 @@ export type IsAlias<
   E extends readonly FromEntry[],
   A extends string,
 > = EntryByAlias<E, A> extends never ? false : true;
+
+type NonTypeNameChar = "(" | ")" | "," | "'" | '"' | "*" | "=" | ":";
+
+/**
+ * A `::` only ends the expression when what follows is shaped like a type name.
+ * Otherwise it belongs to a nested expression, as in
+ * `(select count(*)::int8 from t)`, where the cast is the subquery's.
+ */
+type IsTypeNameShaped<S extends string> = Trim<S> extends ""
+  ? false
+  : Trim<S> extends `${string}${NonTypeNameChar}${string}`
+    ? false
+    : Trim<S> extends `${string} ${string}`
+      ? Lowercase<Trim<S>> extends "double precision"
+        ? true
+        : false
+      : true;
 
 type Cast<Ty extends string> = Trim<Ty> extends `${infer Base}[]`
   ? Lowercase<Trim<Base>> extends infer L extends keyof CastTypes
@@ -111,10 +130,18 @@ type ResolveExpr<
   E extends readonly FromEntry[],
   Expr extends string,
 > = Expr extends `${string}::${string}`
-  ? Cast<AfterLast<Expr, "::">>
-  : Expr extends `${string}(${string}`
-    ? ResolveCall<S, E, Expr>
-    : Expr extends `${infer A}.${infer C}`
+  ? IsTypeNameShaped<AfterLast<Expr, "::">> extends true
+    ? Cast<AfterLast<Expr, "::">>
+    : ResolveNonCast<S, E, Expr>
+  : ResolveNonCast<S, E, Expr>;
+
+type ResolveNonCast<
+  S extends SchemaDef,
+  E extends readonly FromEntry[],
+  Expr extends string,
+> = Expr extends `${string}(${string}`
+  ? ResolveCall<S, E, Expr>
+  : Expr extends `${infer A}.${infer C}`
       ? IsAlias<E, A> extends true
         ? ColOf<S, EntryByAlias<E, A>, C>
         : XqlError<`unknown table alias "${A}" — in scope: ${AliasList<E>}`>
@@ -128,7 +155,9 @@ type ResolveCall<
   E extends readonly FromEntry[],
   Expr extends string,
 > = Expr extends `${infer Fn}(${infer Args})`
-  ? Lowercase<Trim<Fn>> extends "count"
+  ? Lowercase<Trim<Fn>> extends infer F extends keyof FnTypes
+    ? FnTypes[F]
+    : Lowercase<Trim<Fn>> extends "count"
     ? bigint
     : Lowercase<Trim<Fn>> extends "sum" | "avg" | "min" | "max"
       ? ResolveExpr<S, E, Trim<Args>> extends infer T
@@ -136,7 +165,7 @@ type ResolveCall<
           ? XqlError<`cannot infer the type of "${Expr}" — add an explicit cast, e.g. ${Expr}::numeric`>
           : T | null
         : never
-      : Lowercase<Trim<Fn>> extends "coalesce"
+      : Lowercase<Trim<Fn>> extends "coalesce" | "nullif" | "greatest" | "least"
         ? ResolveExpr<
             S,
             E,

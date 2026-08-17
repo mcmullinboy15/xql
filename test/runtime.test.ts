@@ -251,6 +251,7 @@ test("ORDER BY direction must be asc or desc", () => {
     `select id from product order by id asc desc`,
     `select id from product order by id nulls`,
     `select id from product order by id first`,
+    `select id from product order by id nulls sideways`,
   ]) {
     assert.throws(() => (xql as any)(q), (e: Error) =>
       e instanceof XqlError && /^invalid ORDER BY direction/.test(e.message), q);
@@ -260,6 +261,10 @@ test("ORDER BY direction must be asc or desc", () => {
 test("ORDER BY accepts every valid direction form, and leaves expressions alone", () => {
   const { xql } = mk();
   for (const q of [
+    `select id from product order by coalesce(price, title) desc`,
+    `select id from product order by case when id = 1 then 0 else 1 end`,
+    `select id from product order by case when id = 1 then 0 else 1 end desc`,
+    `select id from product order by id nulls first;`,
     `select id from product order by id`,
     `select id from product order by id desc`,
     `select id from product order by id asc nulls last`,
@@ -466,4 +471,153 @@ test("bytes columns validate, and array casts build array schemas", async () => 
     "select id from asset where digest = any ($1::bytes[])",
   );
   assert.deepEqual(q.toSql().values, [[digest]]);
+});
+
+test("DISTINCT and DISTINCT ON are transparent to the row shape", () => {
+  const { xql } = mk();
+  const shapes: [string, string[]][] = [
+    [`select distinct p.title, p.id from product p`, ["title", "id"]],
+    [`select DISTINCT p.title from product p`, ["title"]],
+    [`select distinct * from product`, ["id", "title", "price", "created_at"]],
+    [`select all p.id from product p`, ["id"]],
+    [`select distinct on (p.title) p.title, p.id from product p`, ["title", "id"]],
+    [`select distinct on (p.title, p.id) p.title from product p`, ["title"]],
+    [`select count(distinct p.id) as n from product p`, ["n"]],
+  ];
+  for (const [q, expected] of shapes) {
+    assert.deepEqual(Object.keys(((xql as any)(q)).rowSchema.shape), expected, q);
+  }
+  // DISTINCT must not hide the emitted SQL either
+  assert.equal(
+    (xql as any)(`select distinct on (p.title) p.title from product p`).toSql().text,
+    "select distinct on (p.title) p.title from product p",
+  );
+});
+
+test("references inside DISTINCT ON are checked", () => {
+  const { xql } = mk();
+  const cases: [string, RegExp][] = [
+    [`select distinct on (p.nope) p.title from product p`, /^unknown column "nope" on table "product"$/],
+    [`select distinct on (z.title) p.title from product p`, /^unknown table alias "z"/],
+    [`select distinct p.nope from product p`, /^unknown column "nope" on table "product"$/],
+  ];
+  for (const [q, re] of cases) {
+    assert.throws(() => (xql as any)(q), (e: Error) => e instanceof XqlError && re.test(e.message), q);
+  }
+});
+
+test("subquery and set-operator scopes are not resolved against the outer query", () => {
+  const { xql } = mk();
+  for (const q of [
+    `select p.id from product p where p.id in (select v.product_id from variant v)`,
+    `select p.id from product p where exists (select 1 from variant v where v.product_id = p.id)`,
+    `select p.id from product p where p.id in (select v.product_id from variant v where v.sku in (select s.name from supplier s))`,
+    `select p.id from product p union select v.id from variant v`,
+    `select p.id from product p union all select v.product_id from variant v`,
+  ]) {
+    assert.doesNotThrow(() => (xql as any)(q), q);
+  }
+  // the outer scope is still checked, including after a skipped subquery
+  for (const q of [
+    `select p.id from product p where p.nope = 1`,
+    `select p.id from product p where p.id in (select v.id from variant v) and p.nope = 1`,
+  ]) {
+    assert.throws(() => (xql as any)(q), (e: Error) =>
+      e instanceof XqlError && /^unknown column "nope"/.test(e.message), q);
+  }
+});
+
+test("CockroachDB type aliases decode like their Postgres equivalents", async () => {
+  const things = defineSchema({ thing: { id: t.int8(), label: t.text() } });
+  const run = (rows: unknown[]) => createXql(things, { query: async () => rows });
+
+  assert.deepEqual(await run([{ s: "7" }])(`select id::string as s from thing`).rows(), [{ s: "7" }]);
+  assert.deepEqual(await run([{ a: 3 }])(`select id::int2 as a from thing`).rows(), [{ a: 3 }]);
+  assert.deepEqual(await run([{ a: 9n }])(`select id::bigserial as a from thing`).rows(), [{ a: 9n }]);
+  assert.deepEqual(await run([{ s: ["a"] }])(`select id::string[] as s from thing`).rows(), [{ s: ["a"] }]);
+  // still typed, not a free pass: a wrong value is refused
+  await assert.rejects(() => run([{ s: 7 }])(`select id::string as s from thing`).rows());
+  assert.throws(() => (run([]) as any)(`select id::nosuchtype as a from thing`), (e: Error) =>
+    e instanceof XqlError && /^unknown cast type "nosuchtype"/.test(e.message));
+});
+
+test("known function result types resolve without a cast", async () => {
+  const s = defineSchema({
+    product: { id: t.int8(), title: t.text(), digest: t.bytes() },
+    adjustment: { id: t.int8(), product_id: t.int8(), delta: t.int4() },
+  });
+  const run = (rows: unknown[]) => createXql(s, { query: async () => rows });
+  assert.deepEqual(await run([{ t: "x" }])(`select lower(p.title) as t from product p`).rows(), [{ t: "x" }]);
+  assert.deepEqual(await run([{ n: 3 }])(`select length(p.title) as n from product p`).rows(), [{ n: 3 }]);
+  assert.deepEqual(await run([{ has: true }])(
+    `select exists (select 1 from adjustment a where a.product_id = p.id) as has from product p`).rows(), [{ has: true }]);
+  // a wrong value for a known function is still refused
+  await assert.rejects(() => run([{ t: 7 }])(`select lower(p.title) as t from product p`).rows());
+});
+
+test("clause splitting ignores keywords inside subqueries and literals", () => {
+  const s = defineSchema({
+    product: { id: t.int8(), title: t.text() },
+    adjustment: { id: t.int8(), product_id: t.int8(), delta: t.int4() },
+  });
+  const x = createXql(s, { query: async () => [] }) as any;
+  const shape = (q: string) => Object.keys(x(q).rowSchema.shape);
+  // the subquery's FROM must not become the outer one
+  assert.deepEqual(shape(`select exists (select 1 from adjustment a where a.product_id = p.id) as has from product p`), ["has"]);
+  assert.deepEqual(shape(`select (select a.delta from adjustment a where a.product_id = p.id limit 1)::int4 as d from product p`), ["d"]);
+  assert.deepEqual(shape(`select p.id from product p where p.title = 'from nowhere'`), ["id"]);
+  assert.deepEqual(shape(`select p.id from product p where p.title = 'a (b'`), ["id"]);
+  // and LIMIT is still validated outside a subquery
+  assert.throws(() => x(`select p.id from product p limit 'abc'`), (e: Error) =>
+    e instanceof XqlError && /^LIMIT must be a number/.test(e.message));
+});
+
+test("a FROM clause is optional when every column types itself", async () => {
+  const s = defineSchema({ product: { id: t.int8(), title: t.text() } });
+  const x = createXql(s, { query: async () => [{ n: 2n, any_p: true }] }) as any;
+  assert.deepEqual(Object.keys(x(`select 1::int8 as one, 'x'::text as s`).rowSchema.shape), ["one", "s"]);
+  assert.deepEqual(
+    await x(`select (select count(*) from product)::int8 as n, exists (select 1 from product) as any_p`).rows(),
+    [{ n: 2n, any_p: true }],
+  );
+  // without a scope, a column reference cannot resolve
+  assert.throws(() => x(`select nope`), (e: Error) =>
+    e instanceof XqlError && /the query has no FROM clause$/.test(e.message));
+  assert.throws(() => x(`select *`), (e: Error) =>
+    e instanceof XqlError && /^select \* requires a FROM clause$/.test(e.message));
+});
+
+test("a nested cast is not mistaken for the outer expression's", () => {
+  const s = defineSchema({ product: { id: t.int8() } });
+  const x = createXql(s, { query: async () => [] }) as any;
+  // the cast belongs to the subquery, so the outer expression is still untyped
+  assert.throws(() => x(`select (select count(*)::int8 from product) as n`), (e: Error) =>
+    e instanceof XqlError && /^cannot infer the type of/.test(e.message));
+  // moving it outside resolves
+  assert.deepEqual(Object.keys(x(`select (select count(*) from product)::int8 as n`).rowSchema.shape), ["n"]);
+  // and a genuine typo is still named
+  assert.throws(() => x(`select p.id::nosuchtype as x from product p`), (e: Error) =>
+    e instanceof XqlError && /^unknown cast type "nosuchtype"$/.test(e.message));
+});
+
+test("FROM constructs xql cannot parse name themselves and suggest the alternative", () => {
+  const s = defineSchema({ product: { id: t.int8(), title: t.text() } });
+  const x = createXql(s, { query: async () => [] }) as any;
+  assert.throws(() => x(`select a.id from ( select id from product ) as a`), (e: Error) =>
+    e instanceof XqlError && /^a subquery in FROM is not supported/.test(e.message));
+  assert.throws(() => x(`select p.id from product p, lateral (select 1) as l`), (e: Error) =>
+    e instanceof XqlError && /^a subquery in FROM is not supported/.test(e.message));
+  for (const q of [
+    `select v.sku from unnest(:ids::string[]) as v (sku)`,
+    `select v.sku from unnest ( :ids::string[] ) as v ( sku )`,
+    `with e as ( select li_id from unnest( :ids::int8[] ) as t (li_id) ) select e.li_id from e`,
+  ]) {
+    assert.throws(() => x(q), (e: Error) =>
+      e instanceof XqlError && /^a table function in FROM is not supported \("unnest"\)/.test(e.message), q);
+  }
+  // the CTE the message points at does work
+  assert.deepEqual(
+    Object.keys(x(`with a as (select id from product) select a.id from a`).rowSchema.shape),
+    ["id"],
+  );
 });
