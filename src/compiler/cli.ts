@@ -75,7 +75,7 @@ async function schemaPull(args: readonly string[]): Promise<void> {
 async function schemaVerify(args: readonly string[]): Promise<void> {
   const connection = flag(args, "--connection") ?? process.env.DATABASE_URL;
   if (!connection) throw new Error("schema verify requires --connection or DATABASE_URL");
-  const catalogFile = path.resolve(flag(args, "--catalog") ?? ".xql/catalog.json");
+  const catalogFile = path.resolve(rootOrCwd(args), flag(args, "--catalog") ?? ".xql/catalog.json");
   const expected = await readCatalog(catalogFile);
   const pg = await loadPgAdapter(connection);
   try {
@@ -95,17 +95,23 @@ async function schemaVerify(args: readonly string[]): Promise<void> {
   }
 }
 
+function rootOrCwd(args: readonly string[]): string {
+  return path.resolve(flag(args, "--root") ?? process.cwd());
+}
+
 async function compile(args: readonly string[]): Promise<void> {
-  const root = path.resolve(flag(args, "--root") ?? process.cwd());
+  const root = rootOrCwd(args);
   const catalogFile = path.resolve(root, flag(args, "--catalog") ?? ".xql/catalog.json");
   const catalog = await readCatalog(catalogFile);
   const result = await compileProject({
     root,
     catalog,
     outFile: flag(args, "--out") ?? ".xql/generated.ts",
+    ...(flag(args, "--runtime-out") ? { runtimeFile: flag(args, "--runtime-out")! } : {}),
     moduleName: flag(args, "--module") ?? "xql",
     compiledOnly: has(args, "--compiled-only"),
     cache: !has(args, "--no-cache"),
+    emitTypes: !has(args, "--defer-types"),
     ...(flag(args, "--cache") ? { cacheFile: flag(args, "--cache")! } : {}),
   });
   for (const diagnostic of result.diagnostics) {
@@ -113,8 +119,9 @@ async function compile(args: readonly string[]): Promise<void> {
     console.warn(`${where}${diagnostic.code}: ${diagnostic.message}`);
   }
   const stats = result.stats;
+  const types = stats.typesUpdated ? "types refreshed" : has(args, "--defer-types") ? "types deferred" : "types reused";
   console.log(
-    `XQL compiled ${stats.compiledQueries}, reused ${stats.cacheHits} cached, ${stats.uniqueQueries} unique -> ${result.outFile}`,
+    `XQL compiled ${stats.compiledQueries}, reused ${stats.cacheHits} cached, ${stats.uniqueQueries} unique; runtime ${stats.runtimeUpdated ? "updated" : "reused"}; ${types}`,
   );
 }
 
@@ -125,7 +132,7 @@ async function main(): Promise<void> {
   if (command === "schema" && args[1] === "pull") return schemaPull(args.slice(2));
   if (command === "schema" && args[1] === "verify") return schemaVerify(args.slice(2));
   console.error(`Usage:
-  xql compile [--root .] [--catalog .xql/catalog.json] [--out .xql/generated.ts] [--cache .xql/cache.json] [--no-cache] [--compiled-only]
+  xql compile [--root .] [--catalog .xql/catalog.json] [--out .xql/generated.ts] [--runtime-out .xql/runtime.ts] [--cache .xql/cache.json] [--no-cache] [--compiled-only] [--defer-types]
   xql schema pull [--connection postgres://...] [--schemas public] [--catalog .xql/catalog.json] [--schema-out xql.schema.ts]
   xql schema verify [--connection postgres://...] [--catalog .xql/catalog.json]`);
   process.exitCode = 1;
