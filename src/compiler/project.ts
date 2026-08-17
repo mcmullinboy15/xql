@@ -66,13 +66,10 @@ export interface CompileProjectOptions {
   /** Persistent artifact/extraction cache. Defaults to `.xql/cache.json`; set false to disable. */
   readonly cache?: boolean;
   readonly cacheFile?: string;
-  /**
-   * Refresh the global exact-literal TypeScript registry. Defaults to true.
-   * Development loops can set false: SQL is still parsed/analyzed and runtime
-   * metadata is refreshed, while the edited query temporarily uses XQL's
-   * single-query legacy inference until the next full compile.
-   */
+  /** Refresh the global exact-literal TypeScript registry. Defaults to true. */
   readonly emitTypes?: boolean;
+  /** Refresh the generated runtime manifest module. Defaults to true. */
+  readonly emitRuntime?: boolean;
 }
 
 export interface CompileProjectStats {
@@ -331,6 +328,7 @@ export async function compileProject(
     generatedTypesImport,
     "runtime",
   );
+  const emitRuntime = options.emitRuntime !== false;
   const currentRuntimeStamp =
     configMatches && artifactState.runtimeArtifactHash === runtimeArtifactHash
       ? await optionalStamp(runtimeFile)
@@ -341,7 +339,7 @@ export async function compileProject(
 
   let runtimeStamp = currentRuntimeStamp;
   let runtimeUpdated = false;
-  if (!canReuseRuntime) {
+  if (emitRuntime && !canReuseRuntime) {
     await writeFile(
       runtimeFile,
       emitRuntimeManifestModule(artifacts, moduleName, generatedTypesImport),
@@ -386,13 +384,25 @@ export async function compileProject(
         ? artifactState.generatedStamp
         : undefined;
 
+    const preserveRuntimeMetadata = !emitRuntime && configMatches;
+    const nextRuntimeArtifactHash = emitRuntime
+      ? runtimeArtifactHash
+      : preserveRuntimeMetadata
+        ? artifactState.runtimeArtifactHash
+        : undefined;
+    const nextRuntimeStamp = emitRuntime
+      ? runtimeStamp
+      : preserveRuntimeMetadata
+        ? artifactState.runtimeStamp
+        : undefined;
+
     const artifactCacheDirty =
       artifactSetChanged ||
       runtimeUpdated ||
       typesUpdated ||
       !configMatches ||
-      artifactState.runtimeArtifactHash !== runtimeArtifactHash ||
-      artifactState.runtimeStamp !== runtimeStamp ||
+      artifactState.runtimeArtifactHash !== nextRuntimeArtifactHash ||
+      artifactState.runtimeStamp !== nextRuntimeStamp ||
       artifactState.generatedArtifactHash !== nextGeneratedArtifactHash ||
       artifactState.generatedStamp !== nextGeneratedStamp;
 
@@ -407,8 +417,10 @@ export async function compileProject(
           ? { generatedArtifactHash: nextGeneratedArtifactHash }
           : {}),
         ...(nextGeneratedStamp !== undefined ? { generatedStamp: nextGeneratedStamp } : {}),
-        runtimeArtifactHash,
-        runtimeStamp: runtimeStamp!,
+        ...(nextRuntimeArtifactHash !== undefined
+          ? { runtimeArtifactHash: nextRuntimeArtifactHash }
+          : {}),
+        ...(nextRuntimeStamp !== undefined ? { runtimeStamp: nextRuntimeStamp } : {}),
         artifacts,
       };
       await writeFile(resolvedCacheFile, JSON.stringify(cache) + "\n");
