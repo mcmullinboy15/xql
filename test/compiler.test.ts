@@ -5,6 +5,7 @@ import {
   compileQuery,
   diffCatalog,
   emitGeneratedModule,
+  emitRuntimeManifestModule,
   extractQueriesFromSource,
   type CompilerCatalog,
   type PostgresParser,
@@ -177,17 +178,22 @@ test("dynamic source is diagnosed instead of pretending it was compiled", () => 
   assert.equal(extracted.diagnostics[0]?.code, "XQL_DYNAMIC_SOURCE");
 });
 
-test("generated module carries concrete query types and runtime manifest", () => {
-  const module = emitGeneratedModule([{
+test("generated types and runtime manifest are emitted as separate stable surfaces", () => {
+  const artifacts = [{
     source: "select id from product where id = :id",
     sql: "select id from product where id = :id",
-    kind: "select",
+    kind: "select" as const,
     columns: [{ name: "id", sqlType: "int8", nullable: false }],
     params: [{ name: "id", sqlType: "int8", nullable: false }],
-  }]);
-  assert.match(module, /interface GeneratedQueryRegistry/);
-  assert.match(module, /GeneratedQueryInfo<\{ "id": bigint; \}, \{ "id": bigint; \}>/);
-  assert.match(module, /export const manifest/);
+  }];
+  const typesModule = emitGeneratedModule(artifacts);
+  const runtimeModule = emitRuntimeManifestModule(artifacts);
+  assert.match(typesModule, /interface GeneratedQueryRegistry/);
+  assert.match(typesModule, /GeneratedQueryInfo<\{ "id": bigint; \}, \{ "id": bigint; \}>/);
+  assert.match(typesModule, /export \{ manifest \} from "\.\/runtime\.js"/);
+  assert.doesNotMatch(typesModule, /export const manifest/);
+  assert.match(runtimeModule, /export const manifest/);
+  assert.match(runtimeModule, /CompiledManifest/);
 });
 
 test("catalog diff identifies database drift", () => {
