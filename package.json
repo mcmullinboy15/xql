@@ -1,23 +1,63 @@
 {
   "name": "xql",
   "version": "0.1.0",
-  "description": "SQL template strings that type and validate their own output",
-  "main": "index.js",
-  "scripts": {
-    "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "node --test --experimental-strip-types test/runtime.test.ts test/pg.test.ts",
-    "check": "npm run typecheck && npm test"
+  "description": "Write PostgreSQL. Get ORM-level safety without an ORM abstraction.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./compiler": {
+      "types": "./dist/compiler/index.d.ts",
+      "import": "./dist/compiler/index.js"
+    }
   },
-  "keywords": [],
-  "author": "",
+  "bin": {
+    "xql": "./dist/compiler/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "node --test --experimental-strip-types test/runtime.test.ts test/pg.test.ts test/hardening.test.ts test/compiler.test.ts test/differential.test.ts",
+    "test:differential": "node --test --experimental-strip-types test/differential.test.ts",
+    "check": "npm run typecheck && npm test",
+    "bench:types": "node --experimental-strip-types benchmark/typecheck.ts",
+    "bench:types:assert": "node --experimental-strip-types benchmark/assert-type-performance.ts",
+    "prepublishOnly": "npm run check && npm run build"
+  },
+  "keywords": [
+    "postgresql",
+    "sql",
+    "typescript",
+    "type-safe",
+    "orm"
+  ],
   "license": "ISC",
   "dependencies": {
-    "@electric-sql/pglite": "^0.5.5",
     "typescript": "^7.0.2",
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "^0.5.5",
     "@types/node": "^26.2.0"
   },
-  "type": "module"
+  "peerDependencies": {
+    "libpg-query": ">=17.7.4",
+    "pg": ">=8.0.0"
+  },
+  "peerDependenciesMeta": {
+    "libpg-query": {
+      "optional": true
+    },
+    "pg": {
+      "optional": true
+    }
+  }
 }

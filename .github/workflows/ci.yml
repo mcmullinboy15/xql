@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+        env:
+          XQL_DIFFERENTIAL_SEEDS: "250"
+      - run: npm run build
+      - run: npm pack --dry-run
+
+  type-performance:
+    name: type-performance (${{ matrix.count }} queries)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        count: [100, 1000, 5000, 10000, 25000]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Build published type surface
+        run: npm run build
+      - name: Benchmark baseline vs compiled XQL
+        run: >-
+          npm run bench:types --
+          --counts ${{ matrix.count }}
+          --modes baseline,compiled
+          --xql-entry ../../dist/index.d.ts
+      - name: Enforce type-performance budgets
+        run: npm run bench:types:assert -- --count ${{ matrix.count }}
