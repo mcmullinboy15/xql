@@ -59,6 +59,14 @@ const asBoolean = z.preprocess(
   z.boolean(),
 );
 
+/**
+ * Postgres returns bytea as a Buffer, which is a Uint8Array. The annotation
+ * pins the output to plain `Uint8Array`; `z.instanceof` would infer
+ * `Uint8Array<ArrayBuffer>`, which is a different type from the one a
+ * `::bytes` cast produces.
+ */
+const asBytes: Codec<Uint8Array> = z.instanceof(Uint8Array);
+
 export const t = {
   int8: () => makeColumn("int8", asBigint),
   int4: () => makeColumn("int4", asNumber),
@@ -71,6 +79,7 @@ export const t = {
     makeColumn("timestamptz", asDate),
   date: () => makeColumn("date", asDate),
   uuid: () => makeColumn("uuid", z.string()),
+  bytes: () => makeColumn("bytes", asBytes),
   jsonb: <T>(schema: Codec<T>) => makeColumn("jsonb", schema),
   enum: <const V extends readonly [string, ...string[]]>(values: V) =>
     makeColumn<V[number]>("text", z.enum(values)),
@@ -108,6 +117,8 @@ export interface CastTypes {
   timestamp: Date;
   date: Date;
   uuid: string;
+  bytes: Uint8Array;
+  bytea: Uint8Array;
   json: unknown;
   jsonb: unknown;
 }
@@ -134,6 +145,8 @@ export const castZod: Record<string, Codec<unknown>> = {
   timestamp: asDate,
   date: asDate,
   uuid: z.string(),
+  bytes: asBytes,
+  bytea: asBytes,
   json: z.unknown(),
   jsonb: z.unknown(),
 };

@@ -97,8 +97,11 @@ export type IsAlias<
   A extends string,
 > = EntryByAlias<E, A> extends never ? false : true;
 
-type Cast<Ty extends string> =
-  Lowercase<Trim<Ty>> extends infer L extends keyof CastTypes
+type Cast<Ty extends string> = Trim<Ty> extends `${infer Base}[]`
+  ? Lowercase<Trim<Base>> extends infer L extends keyof CastTypes
+    ? CastTypes[L][]
+    : XqlError<`unknown cast type "${Ty}"`>
+  : Lowercase<Trim<Ty>> extends infer L extends keyof CastTypes
     ? CastTypes[L]
     : XqlError<`unknown cast type "${Ty}"`>;
 

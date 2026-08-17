@@ -149,6 +149,7 @@ precision was already gone before xql saw it.
 | `numeric`     | `string`   | string, number, bigint           |
 | `timestamptz` | `Date`     | Date, ISO string, epoch number   |
 | `bool`        | `boolean`  | boolean, `"t"`/`"f"`             |
+| `bytes`       | `Uint8Array` | Uint8Array (Buffer included)   |
 
 This is covered by an integration suite that runs the real queries against real
 Postgres (via PGlite), not a mock.
@@ -285,6 +286,19 @@ keywords, function names, cast types and literals are never mistaken for one —
 `where created_at > now() - interval '1 day'` and `where cast(id as text) = :t`
 both pass untouched. Output names are accepted in `GROUP BY` and `ORDER BY`,
 where Postgres allows them, but not in `WHERE` or `HAVING`, where it does not.
+
+A cast may be an array, and an array cast on a *parameter* types it as an array
+rather than as its element — the comparison context alone would be wrong for
+`= any (...)`:
+
+```ts
+xql(`select id from asset where digest = any (:digests::bytea[])`, { digests: [buf] });
+//   ^? { digests: Uint8Array[] }
+xql(`select array_agg(a.label)::text[] as labels from asset a`);
+//   ^? { labels: string[] }[]
+```
+
+`bytes` and `bytea` are the same type; the first is CockroachDB's spelling.
 
 `LIMIT` / `OFFSET` must take a count — a non-negative integer, `ALL`, or a
 parameter (typed as `number | bigint`, not an arbitrary value). `ORDER BY`

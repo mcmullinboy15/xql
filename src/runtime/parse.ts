@@ -207,9 +207,10 @@ export function resolveExpr(
   const castAt = expr.lastIndexOf("::");
   if (castAt !== -1) {
     const ty = expr.slice(castAt + 2).trim().toLowerCase();
-    const zt = castZod[ty];
+    const isArray = ty.endsWith("[]");
+    const zt = castZod[isArray ? ty.slice(0, -2).trim() : ty];
     if (zt === undefined) throw new XqlError(`unknown cast type "${ty}"`);
-    return zt;
+    return isArray ? z.array(zt) : zt;
   }
 
   if (expr.includes("(")) return resolveCall(schema, entries, expr);
