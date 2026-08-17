@@ -8,7 +8,7 @@ export {
   type CatalogDiff,
 } from "./catalog.ts";
 export { compileQuery } from "./compile-query.ts";
-export { emitGeneratedModule } from "./emit.ts";
+export { emitGeneratedModule, emitRuntimeManifestModule } from "./emit.ts";
 export { extractQueriesFromSource, type ExtractResult } from "./extract.ts";
 export { loadPostgresParser, parsePostgres } from "./parser.ts";
 export {
