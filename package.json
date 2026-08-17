@@ -32,6 +32,8 @@
     "bench:types:assert": "node --experimental-strip-types benchmark/assert-type-performance.ts",
     "bench:compiler": "node --experimental-strip-types benchmark/compiler.ts",
     "bench:compiler:assert": "node --experimental-strip-types benchmark/assert-compiler-performance.ts",
+    "bench:query-edit": "node --experimental-strip-types benchmark/query-edit.ts",
+    "bench:query-edit:assert": "node --experimental-strip-types benchmark/assert-query-edit-performance.ts",
     "prepublishOnly": "npm run check && npm run build"
   },
   "keywords": [
