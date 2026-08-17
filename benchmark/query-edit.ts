@@ -149,7 +149,7 @@ async function writeFixture(root: string, count: number): Promise<string[]> {
   await fs.writeFile(
     path.join(root, "fixture.ts"),
     `import { createXql, defineSchema, t } from "xql";\n` +
-    `import { manifest } from "./.xql/generated.js";\n` +
+    `import { manifest } from "./.xql/runtime.js";\n` +
     `const schema = defineSchema({ product: { id: t.int8(), title: t.text() } });\n` +
     `export const xql = createXql(schema, { query: async () => [] }, { manifest });\n`,
     "utf8",
