@@ -54,11 +54,17 @@ export function emitGeneratedModule(
     lines.push(`    ${JSON.stringify(artifact.source)}: GeneratedQueryInfo<${row}, ${params}>;`);
   }
 
+  // Keep runtime metadata opaque to TypeScript. Emitting the full manifest as an
+  // `as const` object makes the checker materialize every nested literal type,
+  // which turns one generated-file edit into gigabytes of type state in large
+  // projects. JSON.parse preserves the exact runtime artifact while the checker
+  // only sees the stable CompiledManifest contract.
+  const serializedManifest = JSON.stringify(manifest);
   lines.push(
     `  }`,
     `}`,
     ``,
-    `export const manifest = ${JSON.stringify(manifest, null, 2)} as const satisfies CompiledManifest;`,
+    `export const manifest = JSON.parse(${JSON.stringify(serializedManifest)}) as CompiledManifest;`,
     ``,
   );
   return lines.join("\n");
