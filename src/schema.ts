@@ -10,7 +10,7 @@ export interface Column<T> {
   nullable(): Column<T | null>;
 }
 
-function makeColumn<T>(
+export function column<T>(
   sqlType: string,
   zod: Codec<T>,
   isNullable = false,
@@ -19,8 +19,7 @@ function makeColumn<T>(
     zod,
     sqlType,
     isNullable,
-    nullable: () =>
-      makeColumn<T | null>(sqlType, zod.nullable(), true),
+    nullable: () => column<T | null>(sqlType, zod.nullable(), true),
   };
 }
 
@@ -29,9 +28,6 @@ function makeColumn<T>(
  * decodes int8 as a string, PGlite as a number, Prisma as a bigint. Codecs
  * accept every representation and normalise to one declared TypeScript type, so
  * the row type does not depend on which driver is underneath.
- *
- * A number that cannot round-trip (beyond Number.MAX_SAFE_INTEGER) is rejected
- * rather than silently truncated — the precision was already lost upstream.
  */
 const asBigint = z.preprocess((v) => {
   if (typeof v === "number" && Number.isSafeInteger(v)) return BigInt(v);
@@ -59,21 +55,26 @@ const asBoolean = z.preprocess(
   z.boolean(),
 );
 
+const asBytea = z.instanceof(Uint8Array);
+
 export const t = {
-  int8: () => makeColumn("int8", asBigint),
-  int4: () => makeColumn("int4", asNumber),
-  float8: () => makeColumn("float8", asNumber),
-  text: () => makeColumn("text", z.string()),
-  bool: () => makeColumn("bool", asBoolean),
-  numeric: () =>
-    makeColumn("numeric", asNumericString),
-  timestamptz: () =>
-    makeColumn("timestamptz", asDate),
-  date: () => makeColumn("date", asDate),
-  uuid: () => makeColumn("uuid", z.string()),
-  jsonb: <T>(schema: Codec<T>) => makeColumn("jsonb", schema),
+  int8: () => column("int8", asBigint),
+  int4: () => column("int4", asNumber),
+  int2: () => column("int2", asNumber),
+  float8: () => column("float8", asNumber),
+  float4: () => column("float4", asNumber),
+  text: () => column("text", z.string()),
+  bool: () => column("bool", asBoolean),
+  numeric: () => column("numeric", asNumericString),
+  timestamptz: () => column("timestamptz", asDate),
+  timestamp: () => column("timestamp", asDate),
+  date: () => column("date", asDate),
+  uuid: () => column("uuid", z.string()),
+  bytea: () => column("bytea", asBytea),
+  json: <T>(schema: Codec<T>) => column("json", schema),
+  jsonb: <T>(schema: Codec<T>) => column("jsonb", schema),
   enum: <const V extends readonly [string, ...string[]]>(values: V) =>
-    makeColumn<V[number]>("text", z.enum(values)),
+    column<V[number]>("text", z.enum(values)),
 };
 
 export type TableDef = Record<string, Column<unknown>>;
@@ -92,8 +93,10 @@ export interface CastTypes {
   int4: number;
   int: number;
   integer: number;
+  int2: number;
   smallint: number;
   float8: number;
+  float4: number;
   float: number;
   real: number;
   "double precision": number;
@@ -108,6 +111,7 @@ export interface CastTypes {
   timestamp: Date;
   date: Date;
   uuid: string;
+  bytea: Uint8Array;
   json: unknown;
   jsonb: unknown;
 }
@@ -118,8 +122,10 @@ export const castZod: Record<string, Codec<unknown>> = {
   int4: asNumber,
   int: asNumber,
   integer: asNumber,
+  int2: asNumber,
   smallint: asNumber,
   float8: asNumber,
+  float4: asNumber,
   float: asNumber,
   real: asNumber,
   "double precision": asNumber,
@@ -134,6 +140,7 @@ export const castZod: Record<string, Codec<unknown>> = {
   timestamp: asDate,
   date: asDate,
   uuid: z.string(),
+  bytea: asBytea,
   json: z.unknown(),
   jsonb: z.unknown(),
 };
