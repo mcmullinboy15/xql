@@ -207,8 +207,8 @@ async function writeFile(file: string, content: string): Promise<void> {
   await fs.writeFile(file, content, "utf8");
 }
 
-function runtimeImport(fromFile: string, runtimeFile: string): string {
-  let relative = path.relative(path.dirname(fromFile), runtimeFile).replaceAll(path.sep, "/");
+function moduleImport(fromFile: string, targetFile: string): string {
+  let relative = path.relative(path.dirname(fromFile), targetFile).replaceAll(path.sep, "/");
   relative = relative.replace(/\.(?:ts|tsx|mts|cts)$/, ".js");
   if (!relative.startsWith(".")) relative = `./${relative}`;
   return relative;
@@ -274,7 +274,7 @@ export async function compileProject(
     : path.resolve(root, options.runtimeFile);
   const outFileKey = path.relative(root, outFile);
   const runtimeFileKey = path.relative(root, runtimeFile);
-  const runtimeModuleImport = runtimeImport(outFile, runtimeFile);
+  const generatedTypesImport = moduleImport(runtimeFile, outFile);
   const hash = catalogHash(options.catalog);
   const artifactState = useCache
     ? await readArtifactCache(resolvedCacheFile, hash)
@@ -323,7 +323,14 @@ export async function compileProject(
     artifactState.outFileKey === outFileKey &&
     artifactState.runtimeFileKey === runtimeFileKey;
 
-  const runtimeArtifactHash = artifactsHash(artifacts, moduleName, "runtime");
+  const runtimeArtifactHash = artifactsHash(
+    artifacts,
+    moduleName,
+    runtimeFileKey,
+    outFileKey,
+    generatedTypesImport,
+    "runtime",
+  );
   const currentRuntimeStamp =
     configMatches && artifactState.runtimeArtifactHash === runtimeArtifactHash
       ? await optionalStamp(runtimeFile)
@@ -335,7 +342,10 @@ export async function compileProject(
   let runtimeStamp = currentRuntimeStamp;
   let runtimeUpdated = false;
   if (!canReuseRuntime) {
-    await writeFile(runtimeFile, emitRuntimeManifestModule(artifacts, moduleName));
+    await writeFile(
+      runtimeFile,
+      emitRuntimeManifestModule(artifacts, moduleName, generatedTypesImport),
+    );
     runtimeStamp = await stamp(runtimeFile);
     runtimeUpdated = true;
   }
@@ -344,8 +354,6 @@ export async function compileProject(
     artifacts,
     moduleName,
     outFileKey,
-    runtimeFileKey,
-    runtimeModuleImport,
     "types",
   );
   const emitTypes = options.emitTypes !== false;
@@ -360,10 +368,7 @@ export async function compileProject(
   let generatedStamp = currentGeneratedStamp;
   let typesUpdated = false;
   if (emitTypes && !canReuseGenerated) {
-    await writeFile(
-      outFile,
-      emitGeneratedModule(artifacts, moduleName, runtimeModuleImport),
-    );
+    await writeFile(outFile, emitGeneratedModule(artifacts, moduleName));
     generatedStamp = await stamp(outFile);
     typesUpdated = true;
   }
