@@ -178,7 +178,7 @@ test("dynamic source is diagnosed instead of pretending it was compiled", () => 
   assert.equal(extracted.diagnostics[0]?.code, "XQL_DYNAMIC_SOURCE");
 });
 
-test("generated types and runtime manifest are emitted as separate stable surfaces", () => {
+test("generated types and runtime manifest form a one-way dependency", () => {
   const artifacts = [{
     source: "select id from product where id = :id",
     sql: "select id from product where id = :id",
@@ -190,8 +190,9 @@ test("generated types and runtime manifest are emitted as separate stable surfac
   const runtimeModule = emitRuntimeManifestModule(artifacts);
   assert.match(typesModule, /interface GeneratedQueryRegistry/);
   assert.match(typesModule, /GeneratedQueryInfo<\{ "id": bigint; \}, \{ "id": bigint; \}>/);
-  assert.match(typesModule, /export \{ manifest \} from "\.\/runtime\.js"/);
+  assert.doesNotMatch(typesModule, /runtime\.js/);
   assert.doesNotMatch(typesModule, /export const manifest/);
+  assert.match(runtimeModule, /import type "\.\/generated\.js"/);
   assert.match(runtimeModule, /export const manifest/);
   assert.match(runtimeModule, /CompiledManifest/);
 });
