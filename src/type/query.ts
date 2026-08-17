@@ -55,14 +55,31 @@ interface KwSplit {
   kw: string;
 }
 
+type AddOpens<S extends string, D extends 1[]> = S extends `${string}(${infer R}`
+  ? AddOpens<R, [...D, 1]>
+  : D;
+
+type SubCloses<S extends string, D extends 1[]> = S extends `${string})${infer R}`
+  ? SubCloses<R, D extends [1, ...infer Rest extends 1[]] ? Rest : []>
+  : D;
+
+type AdjustDepth<D extends 1[], S extends string> = SubCloses<S, AddOpens<S, D>>;
+
+/**
+ * Finds a clause keyword at paren depth zero. A subquery has its own FROM, and
+ * matching it would slice the clauses at the wrong place.
+ */
 type FindKw<
   T extends readonly string[],
   Kw extends string,
   Acc extends string[] = [],
+  Depth extends 1[] = [],
 > = T extends readonly [infer H extends string, ...infer R extends string[]]
-  ? Lowercase<H> extends Kw
-    ? { before: Acc; after: R; found: true; kw: H }
-    : FindKw<R, Kw, [...Acc, H]>
+  ? Depth extends []
+    ? Lowercase<H> extends Kw
+      ? { before: Acc; after: R; found: true; kw: H }
+      : FindKw<R, Kw, [...Acc, H], AdjustDepth<Depth, H>>
+    : FindKw<R, Kw, [...Acc, H], AdjustDepth<Depth, H>>
   : { before: Acc; after: []; found: false; kw: "" };
 
 type TailKw =
@@ -604,7 +621,14 @@ type IsDigits<S extends string> = S extends `${infer C}${infer R}`
     : false
   : false;
 
-type IsLimitValue<V extends string> = IsDigits<V> extends true
+/** A LIMIT inside a subquery carries the rest of the expression, e.g. `1)::int4`. */
+type LimitValue<S extends string> = S extends `${infer A})${string}`
+  ? A
+  : S extends `${infer A};${string}`
+    ? A
+    : S;
+
+type IsLimitValue<Raw extends string, V extends string = LimitValue<Raw>> = IsDigits<V> extends true
   ? true
   : Lowercase<V> extends "all"
     ? true

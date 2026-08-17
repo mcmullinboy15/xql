@@ -540,3 +540,34 @@ test("CockroachDB type aliases decode like their Postgres equivalents", async ()
   assert.throws(() => (run([]) as any)(`select id::nosuchtype as a from thing`), (e: Error) =>
     e instanceof XqlError && /^unknown cast type "nosuchtype"/.test(e.message));
 });
+
+test("known function result types resolve without a cast", async () => {
+  const s = defineSchema({
+    product: { id: t.int8(), title: t.text(), digest: t.bytes() },
+    adjustment: { id: t.int8(), product_id: t.int8(), delta: t.int4() },
+  });
+  const run = (rows: unknown[]) => createXql(s, { query: async () => rows });
+  assert.deepEqual(await run([{ t: "x" }])(`select lower(p.title) as t from product p`).rows(), [{ t: "x" }]);
+  assert.deepEqual(await run([{ n: 3 }])(`select length(p.title) as n from product p`).rows(), [{ n: 3 }]);
+  assert.deepEqual(await run([{ has: true }])(
+    `select exists (select 1 from adjustment a where a.product_id = p.id) as has from product p`).rows(), [{ has: true }]);
+  // a wrong value for a known function is still refused
+  await assert.rejects(() => run([{ t: 7 }])(`select lower(p.title) as t from product p`).rows());
+});
+
+test("clause splitting ignores keywords inside subqueries and literals", () => {
+  const s = defineSchema({
+    product: { id: t.int8(), title: t.text() },
+    adjustment: { id: t.int8(), product_id: t.int8(), delta: t.int4() },
+  });
+  const x = createXql(s, { query: async () => [] }) as any;
+  const shape = (q: string) => Object.keys(x(q).rowSchema.shape);
+  // the subquery's FROM must not become the outer one
+  assert.deepEqual(shape(`select exists (select 1 from adjustment a where a.product_id = p.id) as has from product p`), ["has"]);
+  assert.deepEqual(shape(`select (select a.delta from adjustment a where a.product_id = p.id limit 1)::int4 as d from product p`), ["d"]);
+  assert.deepEqual(shape(`select p.id from product p where p.title = 'from nowhere'`), ["id"]);
+  assert.deepEqual(shape(`select p.id from product p where p.title = 'a (b'`), ["id"]);
+  // and LIMIT is still validated outside a subquery
+  assert.throws(() => x(`select p.id from product p limit 'abc'`), (e: Error) =>
+    e instanceof XqlError && /^LIMIT must be a number/.test(e.message));
+});

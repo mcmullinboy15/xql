@@ -1,4 +1,4 @@
-import type { CastTypes, ColType, SchemaDef } from "../schema.ts";
+import type { CastTypes, ColType, FnTypes, SchemaDef } from "../schema.ts";
 import type { FromEntry } from "./from.ts";
 import type {
   AfterLast,
@@ -128,7 +128,9 @@ type ResolveCall<
   E extends readonly FromEntry[],
   Expr extends string,
 > = Expr extends `${infer Fn}(${infer Args})`
-  ? Lowercase<Trim<Fn>> extends "count"
+  ? Lowercase<Trim<Fn>> extends infer F extends keyof FnTypes
+    ? FnTypes[F]
+    : Lowercase<Trim<Fn>> extends "count"
     ? bigint
     : Lowercase<Trim<Fn>> extends "sum" | "avg" | "min" | "max"
       ? ResolveExpr<S, E, Trim<Args>> extends infer T
@@ -136,7 +138,7 @@ type ResolveCall<
           ? XqlError<`cannot infer the type of "${Expr}" — add an explicit cast, e.g. ${Expr}::numeric`>
           : T | null
         : never
-      : Lowercase<Trim<Fn>> extends "coalesce"
+      : Lowercase<Trim<Fn>> extends "coalesce" | "nullif" | "greatest" | "least"
         ? ResolveExpr<
             S,
             E,
