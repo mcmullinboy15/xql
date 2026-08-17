@@ -101,6 +101,7 @@ export function splitTopLevel(s: string): string[] {
 // ---------------------------------------------------------------------------
 
 export function parseFrom(clause: string): Entry[] {
+  if (clause.trim() === "") return [];
   const toks = words(clause.replace(/,/g, " , "));
   let i = 0;
 
@@ -205,7 +206,12 @@ export function resolveExpr(
 ): Codec<unknown> {
   const expr = raw.trim();
 
-  const castAt = expr.lastIndexOf("::");
+  // A `::` only ends the expression when what follows is shaped like a type
+  // name. Otherwise it belongs to a nested expression, as in
+  // `(select count(*)::int8 from t)`, where the cast is the subquery's.
+  const castAt = isTypeNameShaped(expr.slice(expr.lastIndexOf("::") + 2))
+    ? expr.lastIndexOf("::")
+    : -1;
   if (castAt !== -1) {
     const ty = expr.slice(castAt + 2).trim().toLowerCase();
     const isArray = ty.endsWith("[]");
@@ -234,7 +240,9 @@ export function resolveExpr(
   if (matches.length === 1) return columnZod(schema, matches[0]!, expr);
   if (matches.length === 0)
     throw new XqlError(
-      `unknown column "${expr}" — not on any table in scope (${aliasList(entries)})`,
+      entries.length === 0
+        ? `unknown column "${expr}" — the query has no FROM clause`
+        : `unknown column "${expr}" — not on any table in scope (${aliasList(entries)})`,
     );
   throw new XqlError(
     `ambiguous column "${expr}" — qualify it, it exists on more than one table in scope (${aliasList(entries)})`,
@@ -316,6 +324,8 @@ export function parseSelect(
     if (item === "") continue;
 
     if (item === "*") {
+      if (entries.length === 0)
+        throw new XqlError("select * requires a FROM clause");
       for (const e of entries) out.push(...tableColumns(schema, e));
       continue;
     }
@@ -388,7 +398,17 @@ function splitClauses(query: string): Clauses {
   const sel = at((t) => t === "select", 0);
   if (sel === -1) throw new XqlError("query must contain a SELECT clause");
   const frm = at((t) => t === "from", sel + 1);
-  if (frm === -1) throw new XqlError("query must contain a FROM clause");
+  // A FROM clause is optional: `select (select …) as a, exists (…) as b` is a
+  // whole query whose columns are all self-typing.
+  if (frm === -1) {
+    const tailless = at((t) => TAIL_KW.has(t), sel + 1);
+    const stop = tailless === -1 ? toks.length : tailless;
+    return {
+      cols: toks.slice(sel + 1, stop).join(" "),
+      from: "",
+      tail: toks.slice(stop).join(" "),
+    };
+  }
   const tail = at((t) => TAIL_KW.has(t), frm + 1);
   const end = tail === -1 ? toks.length : tail;
   return {
@@ -511,6 +531,12 @@ const KEYWORDS = new Set([
 ]);
 
 const stripCast = (t: string) => t.split("::")[0]!;
+
+/** `int8`, `text[]`, `double precision` — but not `int8 from product)`. */
+function isTypeNameShaped(s: string): boolean {
+  const t = s.trim();
+  return t !== "" && /^[A-Za-z_][A-Za-z0-9_]*( precision)?(\[\])?$/.test(t);
+}
 
 /**
  * Rejects references that cannot resolve. Qualified `alias.column` refs are

@@ -355,6 +355,9 @@ a compile error that quotes the reason.
   `to_char` → `string`, `length` → `number`, `now` → `Date`, `row_number` →
   `bigint`, and similar. Anything whose type depends on its arguments in a way
   the call does not show — `jsonb_agg`, `array_agg` — still needs a cast.
+- A `FROM` clause is optional when every column types itself — `select (select
+  count(*) from t)::int8 as n, exists (...) as any` is a whole query. A column
+  reference with no scope reports that there is no FROM clause.
 - Anything else needs an explicit cast, which doubles as the escape hatch and is
   real SQL:
 
@@ -385,8 +388,6 @@ design costs exactly one pair of parentheses, and buys everything else.
   it cannot be resolved before that CTE exists.
 - Column alias lists (`with t (a, b) as ...`) are rejected; name the columns in
   the CTE's own SELECT instead.
-- `SELECT` without a `FROM` clause is not supported, in a CTE body or anywhere
-  else — every query needs a table expression.
 - Clause splitting is parenthesis-aware, so a subquery's own `FROM` is not
   mistaken for the outer one and a keyword inside a string literal cannot move a
   clause boundary.

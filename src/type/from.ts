@@ -1,4 +1,4 @@
-import type { ReplaceAll, Words } from "./string.ts";
+import type { ReplaceAll, Trim, Words } from "./string.ts";
 
 export interface FromEntry {
   table: string;
@@ -141,7 +141,11 @@ type ParseJoins<
     : Acc;
 
 /** `product p left join variant v on ...` -> ordered table entries with join nullability. */
-export type ParseFrom<S extends string> =
+export type ParseFrom<S extends string> = Trim<S> extends ""
+  ? []
+  : ParseFromClause<S>;
+
+type ParseFromClause<S extends string> =
   ReadRef<Words<ReplaceAll<S, ",", " , ">>> extends infer R extends Ref
     ? ParseJoins<
         R["rest"],
