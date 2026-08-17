@@ -293,5 +293,5 @@ export function createXql<const S extends SchemaDef>(
     return adapter.transaction((txAdapter) => run(createXql(schema, txAdapter, options)));
   };
   call.schema = schema;
-  return call as Xql<S>;
+  return call as unknown as Xql<S>;
 }
