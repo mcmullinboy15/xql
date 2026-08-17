@@ -391,8 +391,9 @@ design costs exactly one pair of parentheses, and buys everything else.
 - Clause splitting is parenthesis-aware, so a subquery's own `FROM` is not
   mistaken for the outer one and a keyword inside a string literal cannot move a
   clause boundary.
-- Subqueries in `FROM` are not parsed. They are rejected, but the message talks
-  about an unknown alias rather than naming the real cause.
+- Subqueries and table functions in `FROM` are not parsed. They are rejected by
+  name, and the message points at the alternative — a `WITH` clause, or
+  `= any (:ids::type[])` for a list parameter.
 - Subqueries elsewhere are accepted but not checked: their own scope is skipped
   rather than resolved, so a typo inside one is not caught.
 - After `union` / `intersect` / `except`, checking stops. The row type comes from

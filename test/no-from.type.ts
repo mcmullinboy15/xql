@@ -35,3 +35,35 @@ type _6 = Expect<Equal<
 >>;
 // and ordinary queries are unaffected
 type _7 = Expect<Equal<RowOfQuery<S, "select p.id, p.title from product p">, { id: bigint; title: string }>>;
+
+// --- FROM constructs xql does not parse fail clearly ------------------------
+// A subquery in FROM used to be read as a table literally named "(", giving
+// `unknown table alias "a" — in scope: select`.
+type _8 = Expect<Equal<
+  RowOfQuery<S, "select a.id from ( select id from product ) as a">,
+  XqlError<"a subquery in FROM is not supported — lift it into a WITH clause, which xql does resolve">
+>>;
+type _9 = Expect<Equal<
+  RowOfQuery<S, "select p.id from product p, lateral (select 1) as l">,
+  XqlError<"a subquery in FROM is not supported — lift it into a WITH clause, which xql does resolve">
+>>;
+type _10 = Expect<Equal<
+  RowOfQuery<S, "select v.sku from unnest(:ids::string[]) as v (sku)">,
+  XqlError<'a table function in FROM is not supported ("unnest") — for a list parameter use `= any (:ids::type[])` instead'>
+>>;
+// the suggested alternative resolves
+type _11 = Expect<Equal<
+  RowOfQuery<S, "with a as (select id from product) select a.id from a">,
+  { id: bigint }
+>>;
+
+// the paren may be attached or split off by a token rejoin, as happens inside a
+// CTE body — both spellings must be caught
+type _12 = Expect<Equal<
+  RowOfQuery<S, "select v.sku from unnest ( :ids::string[] ) as v ( sku )">,
+  XqlError<'a table function in FROM is not supported ("unnest") — for a list parameter use `= any (:ids::type[])` instead'>
+>>;
+type _13 = Expect<Equal<
+  RowOfQuery<S, "with e as ( select li_id from unnest( :ids::int8[] ) as t (li_id) ) select e.li_id from e">,
+  XqlError<'a table function in FROM is not supported ("unnest") — for a list parameter use `= any (:ids::type[])` instead'>
+>>;

@@ -599,3 +599,25 @@ test("a nested cast is not mistaken for the outer expression's", () => {
   assert.throws(() => x(`select p.id::nosuchtype as x from product p`), (e: Error) =>
     e instanceof XqlError && /^unknown cast type "nosuchtype"$/.test(e.message));
 });
+
+test("FROM constructs xql cannot parse name themselves and suggest the alternative", () => {
+  const s = defineSchema({ product: { id: t.int8(), title: t.text() } });
+  const x = createXql(s, { query: async () => [] }) as any;
+  assert.throws(() => x(`select a.id from ( select id from product ) as a`), (e: Error) =>
+    e instanceof XqlError && /^a subquery in FROM is not supported/.test(e.message));
+  assert.throws(() => x(`select p.id from product p, lateral (select 1) as l`), (e: Error) =>
+    e instanceof XqlError && /^a subquery in FROM is not supported/.test(e.message));
+  for (const q of [
+    `select v.sku from unnest(:ids::string[]) as v (sku)`,
+    `select v.sku from unnest ( :ids::string[] ) as v ( sku )`,
+    `with e as ( select li_id from unnest( :ids::int8[] ) as t (li_id) ) select e.li_id from e`,
+  ]) {
+    assert.throws(() => x(q), (e: Error) =>
+      e instanceof XqlError && /^a table function in FROM is not supported \("unnest"\)/.test(e.message), q);
+  }
+  // the CTE the message points at does work
+  assert.deepEqual(
+    Object.keys(x(`with a as (select id from product) select a.id from a`).rowSchema.shape),
+    ["id"],
+  );
+});
