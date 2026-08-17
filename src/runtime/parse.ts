@@ -858,6 +858,29 @@ function prepareWith(schema: SchemaDef, query: string): Prepared {
   return { ...main, text: stripped.replace(/\s+/g, " ").trim() };
 }
 
+/**
+ * Splits a leading `distinct` / `distinct on (...)` off a select list. The ON
+ * expressions are still column references, so they are returned for checking
+ * rather than discarded.
+ */
+function splitDistinct(cols: string): { on: string; rest: string } {
+  const plain = words(cols);
+  const first = plain[0]?.toLowerCase();
+  if (first !== "distinct" && first !== "all") return { on: "", rest: cols };
+  const toks = wtokens(cols);
+  let i = 1;
+  let on = "";
+  if (toks[i]?.toLowerCase() === "on") {
+    i++;
+    if (toks[i] === "(") {
+      const group = parenGroup(toks, i);
+      on = group.items.join(" ");
+      i = group.next;
+    }
+  }
+  return { on, rest: toks.slice(i).join(" ") };
+}
+
 export function prepare(schema: SchemaDef, query: string): Prepared {
   if (words(stripMarkers(query))[0]?.toLowerCase() === "with")
     return prepareWith(schema, query);
@@ -868,7 +891,9 @@ export function prepare(schema: SchemaDef, query: string): Prepared {
   const clauses = splitClauses(query);
   checkRoles(clauses);
   const entries = parseFrom(stripMarkers(clauses.from));
-  const columns = parseSelect(schema, entries, stripMarkers(clauses.cols));
+  const distinct = splitDistinct(stripMarkers(clauses.cols));
+  const columns = parseSelect(schema, entries, distinct.rest);
+  if (distinct.on !== "") checkRefs(schema, entries, distinct.on);
   const tail = stripMarkers(clauses.tail);
   checkRefs(schema, entries, tail, new Set(columns.map((c) => c.name)));
   checkOrderColumns(schema, entries, columns, stripMarkers(query));
