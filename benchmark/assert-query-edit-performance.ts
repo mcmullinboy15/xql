@@ -40,7 +40,7 @@ const rows = [
   ["TypeScript peak memory", `${result.editTypecheck.memoryMb ?? "?"} MB`, `<= ${memoryBudget} MB`],
   ["queries recompiled", `${result.editCompiledQueries}`, "1"],
   ["source files reread", `${result.editFilesRead}`, "1"],
-  ["runtime manifest updated", `${result.editRuntimeUpdated}`, "true"],
+  ["runtime TypeScript artifact updated", `${result.editRuntimeUpdated}`, "false"],
   ["global type registry updated", `${result.editTypesUpdated}`, "false"],
 ];
 
@@ -65,8 +65,8 @@ if (result.editCompiledQueries !== 1)
   failures.push(`query edit recompiled ${result.editCompiledQueries} queries; expected exactly 1`);
 if (result.editFilesRead !== 1)
   failures.push(`query edit reread ${result.editFilesRead} source files; expected exactly 1`);
-if (!result.editRuntimeUpdated)
-  failures.push("query edit did not refresh runtime compiler metadata");
+if (result.editRuntimeUpdated)
+  failures.push("development query edit rewrote the runtime TypeScript artifact");
 if (result.editTypesUpdated)
   failures.push("development query edit rewrote the global type registry");
 
