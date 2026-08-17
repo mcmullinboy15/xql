@@ -202,17 +202,17 @@ async function runOne(count: number): Promise<QueryEditResult> {
   const editFile = queryFiles[Math.floor(editIndex / CHUNK_SIZE)]!;
   await editOneQuery(editFile, editIndex);
 
-  // Development mode: the compiler still proves and caches the changed SQL and
-  // refreshes runtime metadata immediately, but defers the global exact-literal
-  // registry refresh. That prevents 24,999 unrelated generated calls from being
-  // invalidated. The edited query temporarily takes the single-query legacy type
-  // path until the next full `xql compile` (which CI/build always performs).
+  // Fast development mode proves and caches the changed SQL, but writes no
+  // generated TypeScript artifact. The edited query temporarily takes XQL's
+  // single-query legacy type/runtime fallback until the next full compile.
+  // Full build/CI always regenerates both exact types and runtime metadata.
   const editCompileStarted = performance.now();
   const editCompile = await compileProject({
     root,
     catalog,
     compiledOnly: true,
     emitTypes: false,
+    emitRuntime: false,
   });
   const editCompileMs = performance.now() - editCompileStarted;
 
