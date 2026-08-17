@@ -53,7 +53,7 @@ type _ = Expect<Equal<Rows<typeof q>, {
   lead_time_days: number | null;
   location_name: string | null;   // LEFT JOIN location
   code: string | null;
-  on_hand: number;
+  on_hand: number | null;         // SUM may be NULL on an empty group/input
   rows_: bigint;
   last_update: Date | null;
 }[]>>;
@@ -98,7 +98,7 @@ type _cte = Expect<Equal<Rows<typeof withCte>, {
   lead_time_days: number | null;
   location_name: string | null;
   code: string | null;
-  on_hand: number;
+  on_hand: number | null;
   rows_: bigint;
   last_update: Date | null;
 }[]>>;
@@ -127,6 +127,6 @@ const twoCtes = x(
 );
 type TwoCteRow = Rows<typeof twoCtes>[number];
 type _h1 = Expect<Equal<TwoCteRow["supplier_name"], string | null>>;
-type _h2 = Expect<Equal<TwoCteRow["on_hand"], number>>;
+type _h2 = Expect<Equal<TwoCteRow["on_hand"], number | null>>;
 type _h3 = Expect<Equal<TwoCteRow["rows_"], bigint>>;
 type _h4 = Expect<Equal<TwoCteRow["archived"], boolean>>;

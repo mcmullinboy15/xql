@@ -3,35 +3,35 @@ import { z } from "zod";
 /** Output type is pinned; input is whatever the driver produced. */
 export type Codec<T> = z.ZodType<T, unknown>;
 
-export interface Column<T> {
+/**
+ * A column carries both its JavaScript output type and its SQL type name.
+ * Keeping SqlType literal is important: `int4` and `float8` are both `number`
+ * in TypeScript, but PostgreSQL gives them different aggregate result types.
+ */
+export interface Column<T, SqlType extends string = string> {
   readonly zod: Codec<T>;
-  readonly sqlType: string;
+  readonly sqlType: SqlType;
   readonly isNullable: boolean;
-  nullable(): Column<T | null>;
+  nullable(): Column<T | null, SqlType>;
 }
 
-function makeColumn<T>(
-  sqlType: string,
+function makeColumn<T, const SqlType extends string>(
+  sqlType: SqlType,
   zod: Codec<T>,
   isNullable = false,
-): Column<T> {
+): Column<T, SqlType> {
   return {
     zod,
     sqlType,
     isNullable,
-    nullable: () =>
-      makeColumn<T | null>(sqlType, zod.nullable(), true),
+    nullable: () => makeColumn<T | null, SqlType>(sqlType, zod.nullable(), true),
   };
 }
 
 /**
  * Drivers disagree on the JS representation of the same SQL type: node-postgres
  * decodes int8 as a string, PGlite as a number, Prisma as a bigint. Codecs
- * accept every representation and normalise to one declared TypeScript type, so
- * the row type does not depend on which driver is underneath.
- *
- * A number that cannot round-trip (beyond Number.MAX_SAFE_INTEGER) is rejected
- * rather than silently truncated — the precision was already lost upstream.
+ * accept every representation and normalise to one declared TypeScript type.
  */
 const asBigint = z.preprocess((v) => {
   if (typeof v === "number" && Number.isSafeInteger(v)) return BigInt(v);
@@ -59,36 +59,43 @@ const asBoolean = z.preprocess(
   z.boolean(),
 );
 
-/**
- * Postgres returns bytea as a Buffer, which is a Uint8Array. The annotation
- * pins the output to plain `Uint8Array`; `z.instanceof` would infer
- * `Uint8Array<ArrayBuffer>`, which is a different type from the one a
- * `::bytes` cast produces.
- */
-const asBytes: Codec<Uint8Array> = z.instanceof(Uint8Array);
+/** Pin the output to plain Uint8Array while still normalising Node Buffers. */
+const asBytes: Codec<Uint8Array> = z.preprocess(
+  (v) => (typeof Buffer !== "undefined" && Buffer.isBuffer(v) ? new Uint8Array(v) : v),
+  z.instanceof(Uint8Array),
+);
 
 export const t = {
   int8: () => makeColumn("int8", asBigint),
   int4: () => makeColumn("int4", asNumber),
+  int2: () => makeColumn("int2", asNumber),
   float8: () => makeColumn("float8", asNumber),
+  float4: () => makeColumn("float4", asNumber),
   text: () => makeColumn("text", z.string()),
+  varchar: () => makeColumn("varchar", z.string()),
   bool: () => makeColumn("bool", asBoolean),
-  numeric: () =>
-    makeColumn("numeric", asNumericString),
-  timestamptz: () =>
-    makeColumn("timestamptz", asDate),
+  numeric: () => makeColumn("numeric", asNumericString),
+  timestamptz: () => makeColumn("timestamptz", asDate),
+  timestamp: () => makeColumn("timestamp", asDate),
   date: () => makeColumn("date", asDate),
   uuid: () => makeColumn("uuid", z.string()),
+  bytea: () => makeColumn("bytea", asBytes),
   bytes: () => makeColumn("bytes", asBytes),
-  jsonb: <T>(schema: Codec<T>) => makeColumn("jsonb", schema),
+  json: <T = unknown>(schema: Codec<T> = z.unknown() as Codec<T>) =>
+    makeColumn("json", schema),
+  jsonb: <T = unknown>(schema: Codec<T> = z.unknown() as Codec<T>) =>
+    makeColumn("jsonb", schema),
   enum: <const V extends readonly [string, ...string[]]>(values: V) =>
-    makeColumn<V[number]>("text", z.enum(values)),
+    makeColumn<V[number], "text">("text", z.enum(values)),
+  custom: <T, const SqlType extends string>(sqlType: SqlType, codec: Codec<T>) =>
+    makeColumn(sqlType, codec),
 };
 
-export type TableDef = Record<string, Column<unknown>>;
+export type TableDef = Record<string, Column<unknown, string>>;
 export type SchemaDef = Record<string, TableDef>;
 
-export type ColType<C> = C extends Column<infer T> ? T : never;
+export type ColType<C> = C extends Column<infer T, string> ? T : never;
+export type ColSqlType<C> = C extends Column<unknown, infer SqlType> ? SqlType : never;
 
 export function defineSchema<const S extends SchemaDef>(schema: S): S {
   return schema;
@@ -139,19 +146,13 @@ export interface CastTypes {
   jsonb: unknown;
 }
 
-/**
- * Functions whose result type is fixed by SQL itself, so it can be resolved
- * without a cast. Anything whose type depends on its arguments in a way that
- * cannot be read off the call — `jsonb_agg`, `array_agg` — deliberately stays
- * out and still needs an explicit cast.
- */
+/** Functions whose result type is fixed independently of their arguments. */
 export interface FnTypes {
   exists: boolean;
   "not exists": boolean;
   bool_and: boolean;
   bool_or: boolean;
   every: boolean;
-
   encode: string;
   to_char: string;
   to_hex: string;
@@ -171,9 +172,7 @@ export interface FnTypes {
   format: string;
   quote_ident: string;
   quote_literal: string;
-
   decode: Uint8Array;
-
   length: number;
   char_length: number;
   character_length: number;
@@ -183,11 +182,9 @@ export interface FnTypes {
   strpos: number;
   array_length: number;
   cardinality: number;
-
   row_number: bigint;
   rank: bigint;
   dense_rank: bigint;
-
   now: Date;
   clock_timestamp: Date;
   statement_timestamp: Date;
@@ -200,7 +197,6 @@ export const fnZod: Record<string, Codec<unknown>> = {
   bool_and: z.boolean(),
   bool_or: z.boolean(),
   every: z.boolean(),
-
   encode: z.string(),
   to_char: z.string(),
   to_hex: z.string(),
@@ -220,9 +216,7 @@ export const fnZod: Record<string, Codec<unknown>> = {
   format: z.string(),
   quote_ident: z.string(),
   quote_literal: z.string(),
-
   decode: asBytes,
-
   length: asNumber,
   char_length: asNumber,
   character_length: asNumber,
@@ -232,11 +226,9 @@ export const fnZod: Record<string, Codec<unknown>> = {
   strpos: asNumber,
   array_length: asNumber,
   cardinality: asNumber,
-
   row_number: asBigint,
   rank: asBigint,
   dense_rank: asBigint,
-
   now: asDate,
   clock_timestamp: asDate,
   statement_timestamp: asDate,
@@ -286,3 +278,32 @@ export const castZod: Record<string, Codec<unknown>> = {
   json: z.unknown(),
   jsonb: z.unknown(),
 };
+
+const TYPE_ALIASES: Readonly<Record<string, string>> = {
+  bigint: "int8",
+  integer: "int4",
+  int: "int4",
+  smallint: "int2",
+  serial: "int4",
+  serial4: "int4",
+  serial8: "int8",
+  bigserial: "int8",
+  real: "float4",
+  float: "float8",
+  "double precision": "float8",
+  decimal: "numeric",
+  boolean: "bool",
+  char: "bpchar",
+  string: "text",
+  bytes: "bytea",
+};
+
+/** Builds a driver-normalising runtime codec from a PostgreSQL/Cockroach type name. */
+export function codecForSqlType(sqlType: string, nullable = false): Codec<unknown> {
+  const raw = sqlType.toLowerCase();
+  const canonical = TYPE_ALIASES[raw] ?? raw;
+  const codec = castZod[canonical];
+  if (codec === undefined)
+    throw new Error(`XQL has no runtime codec for PostgreSQL type "${sqlType}"`);
+  return nullable ? codec.nullable() : codec;
+}

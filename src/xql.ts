@@ -1,14 +1,28 @@
 import type { z } from "zod";
 import type { SchemaDef } from "./schema.ts";
-import { bindParams, prepare, XqlError } from "./runtime/parse.ts";
+import {
+  bindNamedParams,
+  stripSqlCommentsForAnalysis,
+  stripXqlMarkers,
+} from "./runtime/bind.ts";
+import { correctAggregateCodecs } from "./runtime/aggregate.ts";
+import {
+  codecForCompiledColumn,
+  rowSchemaFromArtifact,
+  type CompiledManifest,
+} from "./runtime/compiled.ts";
+import { validateJoinReferences } from "./runtime/join-validation.ts";
+import { prepare, XqlError, type Prepared } from "./runtime/parse.ts";
 import type {
   DynamicFragmentSentinel,
   FragmentParts,
   HasWidePart,
-  ParamsOfQuery,
   PredicateText,
   RowOfQuery,
 } from "./type/query.ts";
+import type { GeneratedQueryInfo, GeneratedQueryRegistry } from "./type/generated.ts";
+import type { ValidateJoinRefs } from "./type/join.ts";
+import type { StrictParamsOfQuery, ValidateStrictParams } from "./type/strict.ts";
 import type { XqlError as XqlTypeError } from "./type/select.ts";
 
 export interface QueryResult {
@@ -16,95 +30,240 @@ export interface QueryResult {
   rowCount?: number;
 }
 
+export interface QueryExecutionOptions {
+  signal?: AbortSignal;
+  timeoutMs?: number;
+  name?: string;
+}
+
 export interface Adapter {
-  query(text: string, values: unknown[]): Promise<unknown[] | QueryResult>;
+  query(
+    text: string,
+    values: unknown[],
+    options?: QueryExecutionOptions,
+  ): Promise<unknown[] | QueryResult>;
+  stream?(
+    text: string,
+    values: unknown[],
+    options?: QueryExecutionOptions,
+  ): AsyncIterable<unknown>;
+  transaction?<T>(run: (adapter: Adapter) => Promise<T>): Promise<T>;
 }
 
 export interface Query<Row> extends PromiseLike<Row[]> {
-  rows(): Promise<Row[]>;
-  one(): Promise<Row>;
-  first(): Promise<Row | null>;
-  /** Rows affected — the useful result for a write with no RETURNING. */
-  rowCount(): Promise<number>;
+  rows(options?: QueryExecutionOptions): Promise<Row[]>;
+  one(options?: QueryExecutionOptions): Promise<Row>;
+  first(options?: QueryExecutionOptions): Promise<Row | null>;
+  rowCount(options?: QueryExecutionOptions): Promise<number>;
+  stream(options?: QueryExecutionOptions): AsyncIterable<Row>;
   toSql(): { text: string; values: unknown[] };
   readonly rowSchema: z.ZodType<Row>;
 }
 
+export interface QueryEvent {
+  readonly phase: "start" | "success" | "error";
+  readonly sql: string;
+  readonly values: readonly unknown[];
+  readonly compiled: boolean;
+  readonly durationMs?: number;
+  readonly error?: unknown;
+  readonly name?: string;
+}
+
+export interface XqlOptions {
+  readonly manifest?: CompiledManifest;
+  readonly compiledOnly?: boolean;
+  readonly validation?: "strict" | "trusted";
+  readonly onQuery?: (event: QueryEvent) => void;
+}
+
+type GeneratedInfo<Q extends string> =
+  Q extends keyof GeneratedQueryRegistry
+    ? GeneratedQueryRegistry[Q]
+    : never;
+
+type ParamsFor<S extends SchemaDef, Q extends string> =
+  Q extends keyof GeneratedQueryRegistry
+    ? GeneratedInfo<Q> extends GeneratedQueryInfo<unknown, infer P>
+      ? P
+      : never
+    : StrictParamsOfQuery<S, Q>;
+
 type ParamsArg<S extends SchemaDef, Q extends string> =
-  ParamsOfQuery<S, Q> extends infer P
+  ParamsFor<S, Q> extends infer P
     ? [keyof P] extends [never]
       ? []
       : [params: P]
     : [];
 
-/**
- * On a parse failure the result is the `XqlError` itself rather than a
- * `Query`, so the mistake surfaces at the call site with its message.
- */
 type Result<S extends SchemaDef, Q extends string> =
-  RowOfQuery<S, Q> extends infer R
-    ? [R] extends [XqlTypeError<string>]
-      ? R
-      : Query<R>
-    : never;
+  Q extends keyof GeneratedQueryRegistry
+    ? GeneratedInfo<Q> extends GeneratedQueryInfo<infer R, unknown>
+      ? Query<R>
+      : never
+    : ValidateJoinRefs<S, Q> extends infer J
+      ? J extends XqlTypeError<string>
+        ? J
+        : ValidateStrictParams<S, Q> extends infer PErr
+          ? PErr extends XqlTypeError<string>
+            ? PErr
+            : RowOfQuery<S, Q> extends infer R
+              ? [R] extends [XqlTypeError<string>]
+                ? R
+                : Query<R>
+              : never
+          : never
+      : never;
 
 export interface Xql<S extends SchemaDef> {
   <const Q extends string>(query: Q, ...args: ParamsArg<S, Q>): Result<S, Q>;
-  /** A SELECT list. Only valid between `select` and `from`. */
   cols<const T extends string>(text: T): `«c:${T}»`;
-  /** A table expression with joins. Only valid after `from`. */
   from<const T extends string>(text: T): `«f:${T}»`;
-  /** A boolean predicate. Only valid after `where`. */
   where<const T extends string>(text: T): `«w:${T}»`;
-  /**
-   * Conditional predicates joined with AND. Falsy parts drop out, so
-   * `cond && \`p.id = :id\`` includes the clause only when `cond` holds. With no
-   * surviving parts the predicate is `true`.
-   */
   and<const T extends FragmentParts>(
     ...parts: T
   ): HasWidePart<T> extends true
     ? DynamicFragmentSentinel
     : `«w:${PredicateText<T, "and", "true">}»`;
-  /** As `and`, joined with OR. With no surviving parts the predicate is `false`. */
   or<const T extends FragmentParts>(
     ...parts: T
   ): HasWidePart<T> extends true
     ? DynamicFragmentSentinel
     : `«w:${PredicateText<T, "or", "false">}»`;
+  transaction<T>(run: (tx: Xql<S>) => Promise<T>): Promise<T>;
   readonly schema: S;
 }
 
 export function createXql<const S extends SchemaDef>(
   schema: S,
   adapter: Adapter,
+  options: XqlOptions = {},
 ): Xql<S> {
-  function call(query: string, params: Record<string, unknown> = {}) {
-    const prepared = prepare(schema, query);
-    const bound = bindParams(prepared.text, params);
+  const preparedCache = new Map<string, { prepared: Prepared; compiled: boolean }>();
 
-    const exec = async () => {
-      const result = await adapter.query(bound.text, bound.values);
-      return Array.isArray(result)
-        ? { rows: result, rowCount: result.length }
-        : { rows: result.rows, rowCount: result.rowCount ?? result.rows.length };
+  const getPrepared = (query: string): { prepared: Prepared; compiled: boolean } => {
+    const cached = preparedCache.get(query);
+    if (cached !== undefined) return cached;
+
+    const artifact = options.manifest?.queries[query];
+    if (artifact !== undefined) {
+      const prepared: Prepared = {
+        text: artifact.sql,
+        columns: artifact.columns.map((column) => ({
+          name: column.name,
+          zod: codecForCompiledColumn(column),
+        })),
+        rowSchema: rowSchemaFromArtifact(artifact),
+      };
+      const result = { prepared, compiled: true };
+      preparedCache.set(query, result);
+      return result;
+    }
+
+    if (options.compiledOnly)
+      throw new XqlError("query is not present in the XQL compiler manifest; run xql compile before executing it");
+
+    // Legacy analysis receives a comment-free copy so comments cannot become
+    // fake ORDER BY directions, identifiers, or parameter contexts. The copy is
+    // never executed; the exact original SQL is restored below.
+    const analysisQuery = stripSqlCommentsForAnalysis(query);
+    validateJoinReferences(schema, analysisQuery);
+    const legacy = correctAggregateCodecs(
+      schema,
+      analysisQuery,
+      prepare(schema, analysisQuery),
+    );
+    const prepared: Prepared = {
+      ...legacy,
+      // Preserve every user byte. Only XQL's own wrappers are removed here;
+      // named parameters are rewritten later by bindNamedParams().
+      text: stripXqlMarkers(query),
+    };
+    const result = { prepared, compiled: false };
+    preparedCache.set(query, result);
+    return result;
+  };
+
+  function call(query: string, params: Record<string, unknown> = {}) {
+    const { prepared, compiled } = getPrepared(query);
+    let bound: { text: string; values: unknown[] };
+    try {
+      bound = bindNamedParams(prepared.text, params);
+    } catch (error) {
+      // Preserve XQL's public runtime error contract at the binder boundary.
+      if (error instanceof Error) throw new XqlError(error.message);
+      throw error;
+    }
+
+    const exec = async (execOptions?: QueryExecutionOptions) => {
+      const started = Date.now();
+      options.onQuery?.({
+        phase: "start",
+        sql: bound.text,
+        values: bound.values,
+        compiled,
+        name: execOptions?.name,
+      });
+      try {
+        const result = await adapter.query(bound.text, bound.values, execOptions);
+        const normalized = Array.isArray(result)
+          ? { rows: result, rowCount: result.length }
+          : { rows: result.rows, rowCount: result.rowCount ?? result.rows.length };
+        options.onQuery?.({
+          phase: "success",
+          sql: bound.text,
+          values: bound.values,
+          compiled,
+          durationMs: Date.now() - started,
+          name: execOptions?.name,
+        });
+        return normalized;
+      } catch (error) {
+        options.onQuery?.({
+          phase: "error",
+          sql: bound.text,
+          values: bound.values,
+          compiled,
+          durationMs: Date.now() - started,
+          error,
+          name: execOptions?.name,
+        });
+        throw error;
+      }
     };
 
-    const run = async () => {
-      const { rows } = await exec();
-      return rows.map((r) => prepared.rowSchema.parse(r));
+    const validate = (row: unknown) =>
+      options.validation === "trusted" ? row : prepared.rowSchema.parse(row);
+
+    const run = async (execOptions?: QueryExecutionOptions) => {
+      const { rows } = await exec(execOptions);
+      return rows.map(validate);
+    };
+
+    const stream = (execOptions?: QueryExecutionOptions): AsyncIterable<unknown> => {
+      if (adapter.stream === undefined)
+        throw new XqlError("this adapter does not implement streaming");
+      const iterable = adapter.stream(bound.text, bound.values, execOptions);
+      return {
+        async *[Symbol.asyncIterator]() {
+          for await (const row of iterable) yield validate(row);
+        },
+      };
     };
 
     return {
       rows: run,
-      one: async () => {
-        const rows = await run();
+      one: async (execOptions?: QueryExecutionOptions) => {
+        const rows = await run(execOptions);
         if (rows.length !== 1)
           throw new XqlError(`expected exactly 1 row, got ${rows.length}`);
         return rows[0];
       },
-      first: async () => (await run())[0] ?? null,
-      rowCount: async () => (await exec()).rowCount,
+      first: async (execOptions?: QueryExecutionOptions) =>
+        (await run(execOptions))[0] ?? null,
+      rowCount: async (execOptions?: QueryExecutionOptions) =>
+        (await exec(execOptions)).rowCount,
+      stream,
       toSql: () => bound,
       rowSchema: prepared.rowSchema,
       then: (onOk: unknown, onErr: unknown) =>
@@ -116,7 +275,6 @@ export function createXql<const S extends SchemaDef>(
   }
 
   const marked = (kind: string) => (text: string) => `«${kind}:${text}»`;
-
   const predicate =
     (sep: string, empty: string) =>
     (...parts: unknown[]) => {
@@ -127,14 +285,21 @@ export function createXql<const S extends SchemaDef>(
       return `«w:${kept.map((p) => `(${p})`).join(` ${sep} `)}»`;
     };
 
-  // The public type is computed from a string literal, so it cannot be proven
-  // from the implementation side. This is the one boundary assertion.
+  const transaction = async <T>(run: (tx: Xql<S>) => Promise<T>): Promise<T> => {
+    if (adapter.transaction === undefined)
+      throw new XqlError("this adapter does not implement transactions");
+    return adapter.transaction((txAdapter) =>
+      run(createXql(schema, txAdapter, options)),
+    );
+  };
+
   return Object.assign(call, {
     cols: marked("c"),
     from: marked("f"),
     where: marked("w"),
     and: predicate("and", "true"),
     or: predicate("or", "false"),
+    transaction,
     schema,
   }) as unknown as Xql<S>;
 }
