@@ -103,6 +103,8 @@ async function compile(args: readonly string[]): Promise<void> {
   const root = rootOrCwd(args);
   const catalogFile = path.resolve(root, flag(args, "--catalog") ?? ".xql/catalog.json");
   const catalog = await readCatalog(catalogFile);
+  const deferGenerated = has(args, "--defer-generated");
+  const deferTypes = deferGenerated || has(args, "--defer-types");
   const result = await compileProject({
     root,
     catalog,
@@ -111,7 +113,8 @@ async function compile(args: readonly string[]): Promise<void> {
     moduleName: flag(args, "--module") ?? "xql",
     compiledOnly: has(args, "--compiled-only"),
     cache: !has(args, "--no-cache"),
-    emitTypes: !has(args, "--defer-types"),
+    emitTypes: !deferTypes,
+    emitRuntime: !deferGenerated,
     ...(flag(args, "--cache") ? { cacheFile: flag(args, "--cache")! } : {}),
   });
   for (const diagnostic of result.diagnostics) {
@@ -119,9 +122,10 @@ async function compile(args: readonly string[]): Promise<void> {
     console.warn(`${where}${diagnostic.code}: ${diagnostic.message}`);
   }
   const stats = result.stats;
-  const types = stats.typesUpdated ? "types refreshed" : has(args, "--defer-types") ? "types deferred" : "types reused";
+  const types = stats.typesUpdated ? "types refreshed" : deferTypes ? "types deferred" : "types reused";
+  const runtime = stats.runtimeUpdated ? "runtime updated" : deferGenerated ? "runtime deferred" : "runtime reused";
   console.log(
-    `XQL compiled ${stats.compiledQueries}, reused ${stats.cacheHits} cached, ${stats.uniqueQueries} unique; runtime ${stats.runtimeUpdated ? "updated" : "reused"}; ${types}`,
+    `XQL compiled ${stats.compiledQueries}, reused ${stats.cacheHits} cached, ${stats.uniqueQueries} unique; ${runtime}; ${types}`,
   );
 }
 
@@ -132,7 +136,7 @@ async function main(): Promise<void> {
   if (command === "schema" && args[1] === "pull") return schemaPull(args.slice(2));
   if (command === "schema" && args[1] === "verify") return schemaVerify(args.slice(2));
   console.error(`Usage:
-  xql compile [--root .] [--catalog .xql/catalog.json] [--out .xql/generated.ts] [--runtime-out .xql/runtime.ts] [--cache .xql/cache.json] [--no-cache] [--compiled-only] [--defer-types]
+  xql compile [--root .] [--catalog .xql/catalog.json] [--out .xql/generated.ts] [--runtime-out .xql/runtime.ts] [--cache .xql/cache.json] [--no-cache] [--compiled-only] [--defer-types] [--defer-generated]
   xql schema pull [--connection postgres://...] [--schemas public] [--catalog .xql/catalog.json] [--schema-out xql.schema.ts]
   xql schema verify [--connection postgres://...] [--catalog .xql/catalog.json]`);
   process.exitCode = 1;
