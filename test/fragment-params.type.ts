@@ -37,13 +37,11 @@ const always = xql(
 );
 type _alwaysRows = Expect<Equal<Rows<typeof always>, { id: bigint }[]>>;
 
+const ownsE = `select ${cols} from ${product} where ${xql.and(
+  true && xql.fragment(`p.price > :e`, { e: "10.00" }),
+)}`;
 // @ts-expect-error — fragment-owned `e` must not also be passed outside.
-xql(
-  `select ${cols} from ${product} where ${xql.and(
-    true && xql.fragment(`p.price > :e`, { e: "10.00" }),
-  )}`,
-  { e: "10.00" },
-);
+xql(ownsE, { e: "10.00" });
 
 // Literal false contributes neither SQL nor params.
 const never = xql(
