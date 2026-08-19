@@ -192,7 +192,7 @@ test("generated types and runtime manifest form a one-way dependency", () => {
   assert.match(typesModule, /GeneratedQueryInfo<\{ "id": bigint; \}, \{ "id": bigint; \}>/);
   assert.doesNotMatch(typesModule, /runtime\.js/);
   assert.doesNotMatch(typesModule, /export const manifest/);
-  assert.match(runtimeModule, /import type "\.\/generated\.js"/);
+  assert.match(runtimeModule, /import type \{\} from "\.\/generated\.js"/);
   assert.match(runtimeModule, /export const manifest/);
   assert.match(runtimeModule, /CompiledManifest/);
 });
