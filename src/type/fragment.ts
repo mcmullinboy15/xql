@@ -107,7 +107,9 @@ type PartText<T> = ActivePart<T> extends infer P
           infer SQL,
           infer Params extends Readonly<Record<string, unknown>>
         >
-      ? `${SQL}${ParamMarkers<SQL, Params>}`
+      // Ownership boundaries let the outer query distinguish a placeholder
+      // owned by this fragment from the same placeholder used elsewhere.
+      ? `«o»${SQL}${ParamMarkers<SQL, Params>}«/o»`
       : P extends string
         ? P
         : never
@@ -141,6 +143,11 @@ export type PredicateText<
   ? S extends "" ? Empty : S
   : never;
 
+type StripOwnershipBoundaries<S extends string> =
+  S extends `${infer Before}«o»${infer Middle}«/o»${infer After}`
+    ? StripOwnershipBoundaries<`${Before}${Middle}${After}`>
+    : S;
+
 /**
  * Type-only metadata is carried inside the literal returned by and()/or().
  * It never reaches PostgreSQL; the public query types canonicalize it first.
@@ -148,6 +155,12 @@ export type PredicateText<
 export type StripParamMarkers<S extends string> =
   S extends `${infer Before}«p:${string}»${infer After}`
     ? StripParamMarkers<`${Before}${After}`>
+    : StripOwnershipBoundaries<S>;
+
+/** Query text with all parameter-owning fragments removed completely. */
+export type StripOwnedFragments<S extends string> =
+  S extends `${infer Before}«o»${string}«/o»${infer After}`
+    ? StripOwnedFragments<`${Before}${After}`>
     : S;
 
 export type OwnedParamNames<S extends string> =
