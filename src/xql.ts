@@ -26,10 +26,7 @@ import type {
   StripParamMarkers,
   XqlParamFragment,
 } from "./type/fragment.ts";
-import type {
-  DynamicFragmentSentinel,
-  RowOfQuery,
-} from "./type/query.ts";
+import type { DynamicFragmentSentinel, RowOfQuery } from "./type/query.ts";
 import type { GeneratedQueryInfo, GeneratedQueryRegistry } from "./type/generated.ts";
 import type { ValidateJoinRefs } from "./type/join.ts";
 import type { StrictParamsOfQuery, ValidateStrictParams } from "./type/strict.ts";
@@ -87,26 +84,67 @@ export interface XqlOptions {
   readonly onQuery?: (event: QueryEvent) => void;
 }
 
+// Keep ordinary queries on the original fast path. Fragment metadata types are
+// intentionally instantiated only for literals that actually contain a marker.
+type HasOwnedParamMarkers<Q extends string> =
+  Q extends `${string}«p:${string}»${string}` ? true : false;
+
+type BaseGeneratedInfo<Q extends string> =
+  Q extends keyof GeneratedQueryRegistry
+    ? GeneratedQueryRegistry[Q]
+    : never;
+
+type BaseParamsFor<S extends SchemaDef, Q extends string> =
+  Q extends keyof GeneratedQueryRegistry
+    ? BaseGeneratedInfo<Q> extends GeneratedQueryInfo<unknown, infer P>
+      ? P
+      : never
+    : StrictParamsOfQuery<S, Q>;
+
+type BaseResult<S extends SchemaDef, Q extends string> =
+  Q extends keyof GeneratedQueryRegistry
+    ? BaseGeneratedInfo<Q> extends GeneratedQueryInfo<infer R, unknown>
+      ? Query<R>
+      : never
+    : ValidateJoinRefs<S, Q> extends infer J
+      ? J extends XqlTypeError<string>
+        ? J
+        : ValidateStrictParams<S, Q> extends infer PErr
+          ? PErr extends XqlTypeError<string>
+            ? PErr
+            : RowOfQuery<S, Q> extends infer R
+              ? [R] extends [XqlTypeError<string>]
+                ? R
+                : Query<R>
+              : never
+          : never
+      : never;
+
 type CanonicalQuery<Q extends string> = StripParamMarkers<Q>;
 
-type GeneratedInfo<Q extends string> =
+type FragmentGeneratedInfo<Q extends string> =
   CanonicalQuery<Q> extends infer C extends string
     ? C extends keyof GeneratedQueryRegistry
       ? GeneratedQueryRegistry[C]
       : never
     : never;
 
-type AllParamsFor<S extends SchemaDef, Q extends string> =
+type FragmentAllParamsFor<S extends SchemaDef, Q extends string> =
   CanonicalQuery<Q> extends keyof GeneratedQueryRegistry
-    ? GeneratedInfo<Q> extends GeneratedQueryInfo<unknown, infer P>
+    ? FragmentGeneratedInfo<Q> extends GeneratedQueryInfo<unknown, infer P>
       ? P
       : never
     : StrictParamsOfQuery<S, CanonicalQuery<Q>>;
 
-type ParamsFor<S extends SchemaDef, Q extends string> = Omit<
-  AllParamsFor<S, Q>,
+type FragmentParamsFor<S extends SchemaDef, Q extends string> = Omit<
+  FragmentAllParamsFor<S, Q>,
   OwnedParamNames<Q>
 >;
+
+type ParamsFor<S extends SchemaDef, Q extends string> =
+  HasOwnedParamMarkers<Q> extends true
+    ? FragmentParamsFor<S, Q>
+    : BaseParamsFor<S, Q>;
 
 type ParamsArg<S extends SchemaDef, Q extends string> =
   ParamsFor<S, Q> extends infer P
@@ -115,7 +153,7 @@ type ParamsArg<S extends SchemaDef, Q extends string> =
       : [params: P]
     : [];
 
-type InferredParams<S extends SchemaDef, Q extends string> =
+type FragmentInferredParams<S extends SchemaDef, Q extends string> =
   StrictParamsOfQuery<S, CanonicalQuery<Q>>;
 
 type MismatchedOwnedParamNames<
@@ -123,8 +161,8 @@ type MismatchedOwnedParamNames<
   Q extends string,
   Name extends string = OwnedParamNames<Q>,
 > = Name extends string
-  ? Name extends keyof InferredParams<S, Q>
-    ? FragmentParamType<OwnedParamTag<Q, Name>> extends InferredParams<S, Q>[Name]
+  ? Name extends keyof FragmentInferredParams<S, Q>
+    ? FragmentParamType<OwnedParamTag<Q, Name>> extends FragmentInferredParams<S, Q>[Name]
       ? never
       : Name
     : Name
@@ -143,12 +181,12 @@ type ValidateOwnedFragmentParams<
     : XqlTypeError<`duplicate fragment-owned parameter :${Extract<Duplicate, string>}`>
   : never;
 
-type Result<S extends SchemaDef, Q extends string> =
+type FragmentResult<S extends SchemaDef, Q extends string> =
   ValidateOwnedFragmentParams<S, Q> extends infer FErr
     ? FErr extends XqlTypeError<string>
       ? FErr
       : CanonicalQuery<Q> extends keyof GeneratedQueryRegistry
-        ? GeneratedInfo<Q> extends GeneratedQueryInfo<infer R, unknown>
+        ? FragmentGeneratedInfo<Q> extends GeneratedQueryInfo<infer R, unknown>
           ? Query<R>
           : never
         : ValidateJoinRefs<S, CanonicalQuery<Q>> extends infer J
@@ -165,6 +203,11 @@ type Result<S extends SchemaDef, Q extends string> =
               : never
           : never
     : never;
+
+type Result<S extends SchemaDef, Q extends string> =
+  HasOwnedParamMarkers<Q> extends true
+    ? FragmentResult<S, Q>
+    : BaseResult<S, Q>;
 
 export interface Xql<S extends SchemaDef> {
   <const Q extends string>(query: Q, ...args: ParamsArg<S, Q>): Result<S, Q>;
@@ -238,9 +281,6 @@ export function createXql<const S extends SchemaDef>(
     if (options.compiledOnly)
       throw new XqlError("query is not present in the XQL compiler manifest; run xql compile before executing it");
 
-    // Legacy analysis receives a comment-free copy so comments cannot become
-    // fake ORDER BY directions, identifiers, or parameter contexts. The copy is
-    // never executed; the exact original SQL is restored below.
     const analysisQuery = stripSqlCommentsForAnalysis(query);
     validateJoinReferences(schema, analysisQuery);
     const legacy = correctAggregateCodecs(
@@ -250,8 +290,6 @@ export function createXql<const S extends SchemaDef>(
     );
     const prepared: Prepared = {
       ...legacy,
-      // Preserve every user byte. Only XQL's own wrappers are removed here;
-      // named parameters are rewritten later by bindNamedParams().
       text: stripXqlMarkers(query),
     };
     const result = { prepared, compiled: false };
@@ -294,7 +332,6 @@ export function createXql<const S extends SchemaDef>(
     try {
       bound = bindNamedParams(prepared.text, resolved.params);
     } catch (error) {
-      // Preserve XQL's public runtime error contract at the binder boundary.
       if (error instanceof Error) throw new XqlError(error.message);
       throw error;
     }
