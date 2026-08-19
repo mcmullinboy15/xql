@@ -6,6 +6,9 @@ import test from "node:test";
 import { extractQueriesWithFragmentVariants } from "../src/compiler/fragment-variants.ts";
 import { compileProject } from "../src/compiler/project.ts";
 import type { CompilerCatalog, PostgresParser } from "../src/compiler/types.ts";
+import type { CompiledManifest } from "../src/runtime/compiled.ts";
+import { createXql } from "../src/xql.ts";
+import { fakeAdapter, schema } from "./fixture.ts";
 
 const S = (sval: string) => ({ String: { sval } });
 const col = (...parts: string[]) => ({ ColumnRef: { fields: parts.map(S) } });
@@ -100,7 +103,7 @@ test("compiler still fails closed for unrelated dynamic interpolation", () => {
   assert.equal(extracted.diagnostics[0]?.code, "XQL_DYNAMIC_SOURCE");
 });
 
-test("compiledOnly project emits both runtime boolean query variants", async () => {
+test("compiledOnly project and runtime support both boolean fragment states", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "xql-fragment-variants-"));
   const parser: PostgresParser = {
     async parse(sql) {
@@ -138,6 +141,39 @@ test("compiledOnly project emits both runtime boolean query variants", async () 
     const generated = await fs.readFile(result.outFile, "utf8");
     assert.match(generated, /where «w:true»/);
     assert.match(generated, /where «w:\(p\.price > :e\)»/);
+
+    const manifest: CompiledManifest = {
+      version: 1,
+      queries: Object.fromEntries(
+        result.artifacts.map((artifact) => [artifact.source, artifact]),
+      ),
+    };
+    const makeRuntime = () => {
+      const { adapter } = fakeAdapter();
+      return createXql(schema, adapter, { manifest, compiledOnly: true });
+    };
+
+    const trueXql = makeRuntime();
+    const trueQuery = trueXql(
+      `select p.id from ${trueXql.from(`product p`)} where ${trueXql.and(
+        true && trueXql.fragment(`p.price > :e`, { e: "10.00" }),
+      )}`,
+    );
+    assert.deepEqual(trueQuery.toSql(), {
+      text: "select p.id from product p where (p.price > $1)",
+      values: ["10.00"],
+    });
+
+    const falseXql = makeRuntime();
+    const falseQuery = falseXql(
+      `select p.id from ${falseXql.from(`product p`)} where ${falseXql.and(
+        false && falseXql.fragment(`p.price > :e`, { e: "10.00" }),
+      )}`,
+    );
+    assert.deepEqual(falseQuery.toSql(), {
+      text: "select p.id from product p where true",
+      values: [],
+    });
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }
