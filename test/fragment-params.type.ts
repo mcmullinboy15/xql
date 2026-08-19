@@ -51,7 +51,7 @@ const never = xql(
 );
 type _neverRows = Expect<Equal<Rows<typeof never>, { id: bigint }[]>>;
 
-// Ordinary outer params and fragment-owned params compose.
+// Ordinary outer params and fragment-owned params compose when names differ.
 const mixed = xql(
   `select ${cols} from ${product} where ${xql.and(
     `p.id = :id`,
@@ -60,6 +60,31 @@ const mixed = xql(
   { id: 1n },
 );
 type _mixedRows = Expect<Equal<Rows<typeof mixed>, { id: bigint }[]>>;
+
+// The same name cannot be fragment-owned and also appear outside that fragment.
+// If rand were false, the outer :e would otherwise have no value.
+const mixedOwnership = xql(
+  `select ${cols} from ${product} where ${xql.and(
+    `p.price < :e`,
+    rand && xql.fragment(`p.price > :e`, { e: "10.00" }),
+  )}`,
+);
+type _mixedOwnership = Expect<Equal<
+  typeof mixedOwnership,
+  XqlError<"duplicate fragment-owned parameter :e">
+>>;
+
+// Nested and()/or() composition retains ownership metadata.
+const nested = xql(
+  `select ${cols} from ${product} where ${xql.and(
+    xql.or(
+      `p.id = :id`,
+      rand && xql.fragment(`p.price > :e`, { e: "10.00" }),
+    ),
+  )}`,
+  { id: 1n },
+);
+type _nestedRows = Expect<Equal<Rows<typeof nested>, { id: bigint }[]>>;
 
 // The final query scope still validates the value supplied by the fragment.
 const wrongValue = xql(
