@@ -3,7 +3,7 @@ import path from "node:path";
 import type { CompiledQueryArtifact } from "../runtime/compiled.ts";
 import { compileQuery } from "./compile-query.ts";
 import { emitGeneratedModule } from "./emit.ts";
-import { extractQueriesFromSource } from "./extract.ts";
+import { extractQueriesWithFragmentVariants } from "./fragment-variants.ts";
 import {
   XqlCompilerError,
   type CompilerCatalog,
@@ -48,7 +48,7 @@ export async function compileProject(
 
   for (const file of files) {
     const text = await fs.readFile(file, "utf8");
-    const extracted = extractQueriesFromSource(
+    const extracted = extractQueriesWithFragmentVariants(
       text,
       path.relative(root, file),
       options.calleeNames,
