@@ -2,6 +2,7 @@ import type { z } from "zod";
 import type { SchemaDef } from "./schema.ts";
 import {
   bindNamedParams,
+  rewriteNamedParams,
   stripSqlCommentsForAnalysis,
   stripXqlMarkers,
 } from "./runtime/bind.ts";
@@ -14,10 +15,19 @@ import {
 import { validateJoinReferences } from "./runtime/join-validation.ts";
 import { prepare, XqlError, type Prepared } from "./runtime/parse.ts";
 import type {
-  DynamicFragmentSentinel,
+  DuplicateOwnedParamNames,
+  ExactFragmentParams,
+  FragmentParamType,
   FragmentParts,
   HasWidePart,
+  OwnedParamNames,
+  OwnedParamTag,
   PredicateText,
+  StripParamMarkers,
+  XqlParamFragment,
+} from "./type/fragment.ts";
+import type {
+  DynamicFragmentSentinel,
   RowOfQuery,
 } from "./type/query.ts";
 import type { GeneratedQueryInfo, GeneratedQueryRegistry } from "./type/generated.ts";
@@ -77,17 +87,26 @@ export interface XqlOptions {
   readonly onQuery?: (event: QueryEvent) => void;
 }
 
+type CanonicalQuery<Q extends string> = StripParamMarkers<Q>;
+
 type GeneratedInfo<Q extends string> =
-  Q extends keyof GeneratedQueryRegistry
-    ? GeneratedQueryRegistry[Q]
+  CanonicalQuery<Q> extends infer C extends string
+    ? C extends keyof GeneratedQueryRegistry
+      ? GeneratedQueryRegistry[C]
+      : never
     : never;
 
-type ParamsFor<S extends SchemaDef, Q extends string> =
-  Q extends keyof GeneratedQueryRegistry
+type AllParamsFor<S extends SchemaDef, Q extends string> =
+  CanonicalQuery<Q> extends keyof GeneratedQueryRegistry
     ? GeneratedInfo<Q> extends GeneratedQueryInfo<unknown, infer P>
       ? P
       : never
-    : StrictParamsOfQuery<S, Q>;
+    : StrictParamsOfQuery<S, CanonicalQuery<Q>>;
+
+type ParamsFor<S extends SchemaDef, Q extends string> = Omit<
+  AllParamsFor<S, Q>,
+  OwnedParamNames<Q>
+>;
 
 type ParamsArg<S extends SchemaDef, Q extends string> =
   ParamsFor<S, Q> extends infer P
@@ -96,30 +115,69 @@ type ParamsArg<S extends SchemaDef, Q extends string> =
       : [params: P]
     : [];
 
-type Result<S extends SchemaDef, Q extends string> =
-  Q extends keyof GeneratedQueryRegistry
-    ? GeneratedInfo<Q> extends GeneratedQueryInfo<infer R, unknown>
-      ? Query<R>
+type InferredParams<S extends SchemaDef, Q extends string> =
+  StrictParamsOfQuery<S, CanonicalQuery<Q>>;
+
+type MismatchedOwnedParamNames<
+  S extends SchemaDef,
+  Q extends string,
+  Name extends string = OwnedParamNames<Q>,
+> = Name extends string
+  ? Name extends keyof InferredParams<S, Q>
+    ? FragmentParamType<OwnedParamTag<Q, Name>> extends InferredParams<S, Q>[Name]
+      ? never
+      : Name
+    : Name
+  : never;
+
+type ValidateOwnedFragmentParams<
+  S extends SchemaDef,
+  Q extends string,
+> = DuplicateOwnedParamNames<Q> extends infer Duplicate
+  ? [Duplicate] extends [never]
+    ? MismatchedOwnedParamNames<S, Q> extends infer Mismatch
+      ? [Mismatch] extends [never]
+        ? null
+        : XqlTypeError<`xql.fragment parameter :${Extract<Mismatch, string>} does not match the SQL parameter type`>
       : never
-    : ValidateJoinRefs<S, Q> extends infer J
-      ? J extends XqlTypeError<string>
-        ? J
-        : ValidateStrictParams<S, Q> extends infer PErr
-          ? PErr extends XqlTypeError<string>
-            ? PErr
-            : RowOfQuery<S, Q> extends infer R
-              ? [R] extends [XqlTypeError<string>]
-                ? R
-                : Query<R>
+    : XqlTypeError<`duplicate fragment-owned parameter :${Extract<Duplicate, string>}`>
+  : never;
+
+type Result<S extends SchemaDef, Q extends string> =
+  ValidateOwnedFragmentParams<S, Q> extends infer FErr
+    ? FErr extends XqlTypeError<string>
+      ? FErr
+      : CanonicalQuery<Q> extends keyof GeneratedQueryRegistry
+        ? GeneratedInfo<Q> extends GeneratedQueryInfo<infer R, unknown>
+          ? Query<R>
+          : never
+        : ValidateJoinRefs<S, CanonicalQuery<Q>> extends infer J
+          ? J extends XqlTypeError<string>
+            ? J
+            : ValidateStrictParams<S, CanonicalQuery<Q>> extends infer PErr
+              ? PErr extends XqlTypeError<string>
+                ? PErr
+                : RowOfQuery<S, CanonicalQuery<Q>> extends infer R
+                  ? [R] extends [XqlTypeError<string>]
+                    ? R
+                    : Query<R>
+                  : never
               : never
           : never
-      : never;
+    : never;
 
 export interface Xql<S extends SchemaDef> {
   <const Q extends string>(query: Q, ...args: ParamsArg<S, Q>): Result<S, Q>;
   cols<const T extends string>(text: T): `«c:${T}»`;
   from<const T extends string>(text: T): `«f:${T}»`;
   where<const T extends string>(text: T): `«w:${T}»`;
+  fragment<
+    const SQL extends string,
+    const Params extends Readonly<Record<string, unknown>>,
+  >(
+    sql: SQL,
+    params: ExactFragmentParams<SQL, Params>,
+  ): XqlParamFragment<SQL, Params>;
   and<const T extends FragmentParts>(
     ...parts: T
   ): HasWidePart<T> extends true
@@ -134,12 +192,29 @@ export interface Xql<S extends SchemaDef> {
   readonly schema: S;
 }
 
+type RuntimeParamFragment = XqlParamFragment<
+  string,
+  Readonly<Record<string, unknown>>
+>;
+
+function isRuntimeParamFragment(value: unknown): value is RuntimeParamFragment {
+  return value !== null
+    && typeof value === "object"
+    && (value as { __xqlParamFragment?: unknown }).__xqlParamFragment === true
+    && typeof (value as { sql?: unknown }).sql === "string";
+}
+
 export function createXql<const S extends SchemaDef>(
   schema: S,
   adapter: Adapter,
   options: XqlOptions = {},
 ): Xql<S> {
   const preparedCache = new Map<string, { prepared: Prepared; compiled: boolean }>();
+  const pendingFragmentParams = new Map<
+    string,
+    Readonly<Record<string, unknown>>
+  >();
+  let nextFragmentToken = 0;
 
   const getPrepared = (query: string): { prepared: Prepared; compiled: boolean } => {
     const cached = preparedCache.get(query);
@@ -184,11 +259,40 @@ export function createXql<const S extends SchemaDef>(
     return result;
   };
 
+  const consumeFragmentParams = (
+    query: string,
+    outerParams: Readonly<Record<string, unknown>>,
+  ): { query: string; params: Record<string, unknown> } => {
+    const merged: Record<string, unknown> = { ...outerParams };
+    const consumed = new Set<string>();
+
+    try {
+      const canonical = query.replace(/«v:([0-9a-z]+)»/g, (_marker, token: string) => {
+        const params = pendingFragmentParams.get(token);
+        if (params === undefined)
+          throw new XqlError(
+            "parameter-owning xql.and()/xql.or() results are single-use; construct the predicate inline or call xql.and()/xql.or() again before reusing it",
+          );
+        consumed.add(token);
+        for (const [name, value] of Object.entries(params)) {
+          if (name in merged)
+            throw new XqlError(`duplicate value for parameter :${name}`);
+          merged[name] = value;
+        }
+        return "";
+      });
+      return { query: canonical, params: merged };
+    } finally {
+      for (const token of consumed) pendingFragmentParams.delete(token);
+    }
+  };
+
   function call(query: string, params: Record<string, unknown> = {}) {
-    const { prepared, compiled } = getPrepared(query);
+    const resolved = consumeFragmentParams(query, params);
+    const { prepared, compiled } = getPrepared(resolved.query);
     let bound: { text: string; values: unknown[] };
     try {
-      bound = bindNamedParams(prepared.text, params);
+      bound = bindNamedParams(prepared.text, resolved.params);
     } catch (error) {
       // Preserve XQL's public runtime error contract at the binder boundary.
       if (error instanceof Error) throw new XqlError(error.message);
@@ -275,14 +379,38 @@ export function createXql<const S extends SchemaDef>(
   }
 
   const marked = (kind: string) => (text: string) => `«${kind}:${text}»`;
+
+  const fragment = (
+    sql: string,
+    params: Readonly<Record<string, unknown>>,
+  ): RuntimeParamFragment => {
+    const names = [...new Set(rewriteNamedParams(sql).names)];
+    const keys = Object.keys(params);
+    const missing = names.filter((name) => !(name in params));
+    const extra = keys.filter((name) => !names.includes(name));
+    if (missing.length > 0)
+      throw new XqlError(`missing value for fragment parameter :${missing[0]}`);
+    if (extra.length > 0)
+      throw new XqlError(`fragment parameter :${extra[0]} is not present in the fragment SQL`);
+    return { sql, params, __xqlParamFragment: true };
+  };
+
   const predicate =
     (sep: string, empty: string) =>
     (...parts: unknown[]) => {
-      const kept = parts.filter(
-        (p): p is string => typeof p === "string" && p.trim() !== "",
-      );
+      const kept: string[] = [];
+      for (const part of parts) {
+        if (typeof part === "string") {
+          if (part.trim() !== "") kept.push(`(${part})`);
+          continue;
+        }
+        if (!isRuntimeParamFragment(part)) continue;
+        const token = (++nextFragmentToken).toString(36);
+        pendingFragmentParams.set(token, part.params);
+        kept.push(`(${part.sql})«v:${token}»`);
+      }
       if (kept.length === 0) return `«w:${empty}»`;
-      return `«w:${kept.map((p) => `(${p})`).join(` ${sep} `)}»`;
+      return `«w:${kept.join(` ${sep} `)}»`;
     };
 
   const transaction = async <T>(run: (tx: Xql<S>) => Promise<T>): Promise<T> => {
@@ -297,6 +425,7 @@ export function createXql<const S extends SchemaDef>(
     cols: marked("c"),
     from: marked("f"),
     where: marked("w"),
+    fragment,
     and: predicate("and", "true"),
     or: predicate("or", "false"),
     transaction,
