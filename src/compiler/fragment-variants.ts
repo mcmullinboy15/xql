@@ -177,18 +177,58 @@ function conditionBefore(text: string, callStart: number): ConditionalIdentifier
   return { name, start, end };
 }
 
-function findFragmentCalls(
+function scanTemplateExpressions(
   text: string,
+  start: number,
+  end: number,
   helperNames: ReadonlySet<string>,
-): FragmentCall[] {
-  const calls: FragmentCall[] = [];
-  let i = 0;
-  while (i < text.length) {
-    const skipped = skipNonCode(text, i);
-    if (skipped !== null) {
-      i = skipped;
+  calls: FragmentCall[],
+): number {
+  let i = start + 1;
+  while (i < end) {
+    if (text[i] === "\\") {
+      i += 2;
       continue;
     }
+    if (text[i] === "`") return i + 1;
+    if (text[i] === "$" && text[i + 1] === "{") {
+      const expressionEnd = balancedEnd(text, i + 1, "{", "}");
+      scanCode(text, i + 2, expressionEnd - 1, helperNames, calls);
+      i = expressionEnd;
+      continue;
+    }
+    i++;
+  }
+  return end;
+}
+
+function scanCode(
+  text: string,
+  start: number,
+  end: number,
+  helperNames: ReadonlySet<string>,
+  calls: FragmentCall[],
+): void {
+  let i = start;
+  while (i < end) {
+    const ch = text[i];
+    if (ch === "`") {
+      i = scanTemplateExpressions(text, i, end, helperNames, calls);
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      i = quotedEnd(text, i, ch);
+      continue;
+    }
+    if (ch === "/" && text[i + 1] === "/") {
+      i = lineCommentEnd(text, i);
+      continue;
+    }
+    if (ch === "/" && text[i + 1] === "*") {
+      i = blockCommentEnd(text, i);
+      continue;
+    }
+
     const owner = readIdentifier(text, i);
     if (owner === null) {
       i++;
@@ -209,16 +249,23 @@ function findFragmentCalls(
     if (close <= cursor + 1) continue;
     const arg = firstArgument(text, cursor, close);
     if (arg === null || arg.start === arg.end) continue;
+    const condition = conditionBefore(text, owner.start);
     calls.push({
       start: owner.start,
       end: close,
       firstArg: arg,
-      ...(conditionBefore(text, owner.start) !== undefined
-        ? { condition: conditionBefore(text, owner.start)! }
-        : {}),
+      ...(condition === undefined ? {} : { condition }),
     });
     i = close;
   }
+}
+
+function findFragmentCalls(
+  text: string,
+  helperNames: ReadonlySet<string>,
+): FragmentCall[] {
+  const calls: FragmentCall[] = [];
+  scanCode(text, 0, text.length, helperNames, calls);
   return calls;
 }
 
@@ -306,8 +353,6 @@ export function extractQueriesWithFragmentVariants(
 
   const diagnostics = base.diagnostics.filter((diagnostic) => {
     if (diagnostic.code !== "XQL_DYNAMIC_SOURCE") return true;
-    // Remove the dynamic diagnostic only if every boolean combination resolves
-    // that exact XQL call. Any other dynamic interpolation remains an error.
     return !variants.every((variant) => !diagnosticAt(diagnostic, variant));
   });
 
