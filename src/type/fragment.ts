@@ -177,9 +177,14 @@ export type OwnedParamTag<
     : OwnedParamTag<Rest, Name>
   : never;
 
+/**
+ * A parameter name may have exactly one owner. `Seen` starts with every
+ * placeholder outside an owning fragment, so the same name used both outside
+ * and inside a fragment is rejected just like two fragments claiming it.
+ */
 export type DuplicateOwnedParamNames<
   S extends string,
-  Seen extends string = never,
+  Seen extends string = ParamNames<StripOwnedFragments<S>>[number],
   Duplicates extends string = never,
 > = S extends `${string}«p:${infer Name}:${string}»${infer Rest}`
   ? DuplicateOwnedParamNames<
